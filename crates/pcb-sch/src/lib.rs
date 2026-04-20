@@ -16,6 +16,7 @@ pub mod bom;
 mod bom_table;
 pub mod hierarchical_layout;
 pub mod kicad_netlist;
+pub mod kicad_schematic;
 pub mod natural_string;
 pub mod physical;
 pub mod position;

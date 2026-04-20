@@ -189,6 +189,10 @@ pub struct BuildArgs {
     #[arg(long = "board-config", hide = true)]
     pub board_config: bool,
 
+    /// Export an evaluated design as a KiCad schematic project
+    #[arg(long = "kicad-project", value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
+    pub kicad_project: Option<PathBuf>,
+
     /// Disable network access (offline mode) - only use vendored dependencies
     #[arg(long = "offline")]
     pub offline: bool,
@@ -256,6 +260,22 @@ pub fn build(
 pub fn execute(args: BuildArgs) -> Result<()> {
     let mut has_errors = false;
 
+    if args.kicad_project.is_some() {
+        if args.netlist || args.board_config {
+            anyhow::bail!("--kicad-project cannot be combined with --netlist or --board-config");
+        }
+
+        let Some(path) = args.path.as_deref() else {
+            anyhow::bail!("--kicad-project requires a single .zen file target");
+        };
+
+        if path.is_dir() {
+            anyhow::bail!("--kicad-project requires a single .zen file target");
+        }
+
+        file_walker::require_zen_file(path)?;
+    }
+
     if !args.config.is_empty() {
         let Some(path) = args.path.as_deref() else {
             anyhow::bail!("--config requires a single .zen file target");
@@ -315,6 +335,10 @@ pub fn execute(args: BuildArgs) -> Result<()> {
                     std::process::exit(1);
                 }
             }
+        } else if let Some(ref kicad_project_dir) = args.kicad_project {
+            crate::kicad_project::export(zen_path, kicad_project_dir, &schematic)?;
+            print_build_success(&file_name, &schematic);
+            eprintln!("  KiCad project: {}", kicad_project_dir.display());
         } else {
             print_build_success(&file_name, &schematic);
         }

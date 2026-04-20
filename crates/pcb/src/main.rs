@@ -23,6 +23,7 @@ mod fmt;
 mod import;
 mod info;
 mod ipc2581;
+mod kicad_project;
 mod kq;
 mod layout;
 mod lsp;

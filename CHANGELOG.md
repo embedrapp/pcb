@@ -8,6 +8,8 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+- `pcb build --kicad-project <dir>` now exports an evaluated design as an openable KiCad schematic project.
+
 ### Fixed
 
 - Avoid collisions in generated footprint library names.

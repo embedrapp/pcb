@@ -2,6 +2,7 @@
 
 use pcb_test_utils::assert_snapshot;
 use pcb_test_utils::sandbox::Sandbox;
+use std::fs;
 
 const SIMPLE_RESISTOR_ZEN: &str = r#"
 value = config(str, default = "10kOhm")
@@ -54,6 +55,34 @@ const TEST_NO_CONNECT_SYMBOL: &str = r#"(kicad_symbol_lib
         (length 2.54)
         (name "NC")
         (number "1")
+      )
+    )
+  )
+)
+"#;
+
+const TEST_EXPORT_SYMBOL: &str = r#"(kicad_symbol_lib
+  (version 20211014)
+  (generator "test")
+  (symbol "Part"
+    (pin_numbers hide)
+    (pin_names (offset 0))
+    (in_bom yes)
+    (on_board yes)
+    (property "Reference" "R" (at 0 2.54 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "Part" (at 0 -2.54 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "" (at 0 0 0) (effects (font (size 1.27 1.27))) hide)
+    (symbol "Part_0_1"
+      (rectangle (start -1.27 1.27) (end 1.27 -1.27) (stroke (width 0.254) (type default)) (fill (type none)))
+    )
+    (symbol "Part_1_1"
+      (pin passive line (at -3.81 0 0) (length 2.54)
+        (name "P1" (effects (font (size 1.27 1.27))))
+        (number "1" (effects (font (size 1.27 1.27))))
+      )
+      (pin passive line (at 3.81 0 180) (length 2.54)
+        (name "P2" (effects (font (size 1.27 1.27))))
+        (number "2" (effects (font (size 1.27 1.27))))
       )
     )
   )
@@ -395,6 +424,70 @@ fn test_diodes_build() {
         .snapshot_run("pcb", ["build", "diodes.zen"]);
 
     assert!(output.contains("Exit Code: 0"), "{output}");
+}
+
+#[test]
+fn test_build_exports_kicad_project() {
+    let mut sandbox = Sandbox::new();
+    let output = sandbox
+        .write(
+            "board.zen",
+            r#"
+sig = Net("SIG")
+gnd = Net("GND")
+
+Component(
+    name = "R1",
+    prefix = "R",
+    footprint = File("test.kicad_mod"),
+    symbol = Symbol(library = "Part.kicad_sym"),
+    pins = {
+        "P1": sig,
+        "P2": gnd,
+    },
+    properties = {
+        "value": "10k",
+    },
+)
+
+# pcb:sch R1 x=100.0000 y=200.0000 rot=0
+# pcb:sch SIG x=130.0000 y=200.0000 rot=180
+"#,
+        )
+        .write("test.kicad_mod", TEST_KICAD_MOD)
+        .write("Part.kicad_sym", TEST_EXPORT_SYMBOL)
+        .snapshot_run("pcb", ["build", "board.zen", "--kicad-project", "export"]);
+
+    assert!(output.contains("Exit Code: 0"), "{output}");
+    assert!(output.contains("KiCad project: export"), "{output}");
+
+    let project = fs::read_to_string(sandbox.root_path().join("export/board.kicad_pro"))
+        .expect("read exported project");
+    let schematic = fs::read_to_string(sandbox.root_path().join("export/board.kicad_sch"))
+        .expect("read exported schematic");
+    let fp_lib_table = fs::read_to_string(sandbox.root_path().join("export/fp-lib-table"))
+        .expect("read exported footprint table");
+
+    assert!(
+        project.contains("\"filename\": \"board.kicad_pro\""),
+        "{project}"
+    );
+    assert!(project.contains("\"Root\""), "{project}");
+
+    assert!(schematic.contains("(kicad_sch"), "{schematic}");
+    assert!(schematic.contains("(lib_id \"Part:Part\")"), "{schematic}");
+    assert!(
+        schematic.contains("(property \"Reference\" \"R1\""),
+        "{schematic}"
+    );
+    assert!(
+        schematic.contains("(property \"Value\" \"10k\""),
+        "{schematic}"
+    );
+    assert!(schematic.contains("(label \"SIG\""), "{schematic}");
+
+    assert!(fp_lib_table.contains("(fp_lib_table"), "{fp_lib_table}");
+    assert!(fp_lib_table.contains("${KIPRJMOD}/.."), "{fp_lib_table}");
 }
 
 #[test]
