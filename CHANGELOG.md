@@ -11,6 +11,7 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 ### Fixed
 
 - Avoid collisions in generated footprint library names.
+- Fixed Windows workspace cache setup so `pcb build` and `pcb layout` do not require symlink privileges.
 
 ## [0.3.70] - 2026-04-17
 
