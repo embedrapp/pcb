@@ -1,0 +1,97 @@
+name: Downstream Release
+
+on:
+  push:
+    branches:
+      - rishabh/release
+    tags:
+      - "rishabh-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build-${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-22.04
+          - name: macos-universal
+            os: macos-13
+          - name: windows-x64
+            os: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Linux
+        if: matrix.name == 'linux-x64'
+        run: cargo build --release -p pcb
+
+      - name: Build macOS universal
+        if: matrix.name == 'macos-universal'
+        run: |
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          cargo build --release -p pcb --target x86_64-apple-darwin
+          cargo build --release -p pcb --target aarch64-apple-darwin
+          mkdir -p target/release
+          lipo -create \
+            target/x86_64-apple-darwin/release/pcb \
+            target/aarch64-apple-darwin/release/pcb \
+            -output target/release/pcb
+
+      - name: Build Windows
+        if: matrix.name == 'windows-x64'
+        run: cargo build --release -p pcb
+
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [[ "${{ matrix.name }}" == "windows-x64" ]]; then
+            cp target/release/pcb.exe "dist/pcb-${{ matrix.name }}.exe"
+          else
+            cp target/release/pcb "dist/pcb-${{ matrix.name }}"
+          fi
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 dist/* > "dist/SHA256SUMS-${{ matrix.name }}.txt"
+          else
+            sha256sum dist/* > "dist/SHA256SUMS-${{ matrix.name }}.txt"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pcb-${{ matrix.name }}
+          path: dist/*
+
+  publish:
+    name: publish-release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/rishabh-v')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" artifacts/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --notes "Downstream pcb CLI build from rshabhsinha/pcb, including fork-specific fixes."
