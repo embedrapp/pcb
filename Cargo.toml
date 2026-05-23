@@ -7,7 +7,7 @@ version = "0.3.71-embedr.3"
 edition = "2024"
 repository = "https://github.com/embedrapp/pcb"
 homepage = "https://github.com/embedrapp/pcb"
-authors = ["Rishabh Sinha"]
+authors = ["Embedr"]
 
 [workspace.dependencies]
 glam = "0.31.0"
