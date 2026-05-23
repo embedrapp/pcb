@@ -1,16 +1,14 @@
-# `pcb`: CLI for circuit boards
-
-> PCB tooling by [Diode Computers, Inc.](https://diode.computer/)
+# `pcb`: local CLI for circuit boards
 
 `pcb` is a command-line utility for building PCBs. It uses the Zener language to describe
-PCB schematics and provides automations on top of KiCad to build PCBs fast.
+PCB schematics and provides local automations on top of KiCad to build PCBs fast.
 
 **[Read the docs](https://docs.pcb.new)** | [Language Reference](https://docs.pcb.new/pages/spec)
 
 > [!WARNING]
 > **Windows support is experimental.** Some features may be limited or unstable. For the best
 > experience, we recommend using WSL2 or macOS/Linux. If you encounter issues, please open an
-> issue in our [issue tracker](https://github.com/diodeinc/pcb/issues).
+> issue in our [issue tracker](https://github.com/rshabhsinha/pcb/issues).
 
 ## Table of Contents
 
@@ -26,13 +24,13 @@ PCB schematics and provides automations on top of KiCad to build PCBs fast.
 
 ### From Installer
 
-See the [latest release](https://github.com/diodeinc/pcb/releases/latest) for installation instructions.
+See the [latest release](https://github.com/rshabhsinha/pcb/releases/latest) for installation instructions.
 
 ### From Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/diodeinc/pcb.git
+git clone https://github.com/rshabhsinha/pcb.git
 cd pcb
 
 # Install using the provided script

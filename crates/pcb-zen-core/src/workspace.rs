@@ -609,7 +609,6 @@ pub fn get_workspace_info<F: FileProvider>(
 mod tests {
     use super::*;
     use crate::InMemoryFileProvider;
-    use crate::config::DEFAULT_KICAD_HTTP_MIRROR_TEMPLATE;
     use std::collections::HashMap;
     use std::path::Path;
 
@@ -640,7 +639,7 @@ footprints = "gitlab.com/kicad/libraries/kicad-footprints"
             "/repo/pcb.toml".to_string(),
             r#"
 [dependencies]
-"github.com/diodeinc/stdlib" = "0.5.11"
+stdlib = "0.5.11"
 "#
             .to_string(),
         )]);
@@ -649,10 +648,7 @@ footprints = "gitlab.com/kicad/libraries/kicad-footprints"
         let info = get_workspace_info(&provider, Path::new("/repo")).unwrap();
         let entries = info.kicad_library_entries();
         assert_eq!(entries.len(), 2);
-        assert_eq!(
-            entries[0].http_mirror.as_deref(),
-            Some(DEFAULT_KICAD_HTTP_MIRROR_TEMPLATE)
-        );
+        assert_eq!(entries[0].http_mirror.as_deref(), None);
         assert_eq!(entries[1].version, Version::new(10, 0, 0));
         assert_eq!(
             info.stdlib_asset_dep_versions()
@@ -762,7 +758,7 @@ stdlib = { path = "third_party/stdlib" }
 pcb-version = "0.3"
 
 [patch]
-"github.com/diodeinc/stdlib" = { path = "../stdlib-fork" }
+"github.com/example/stdlib" = { path = "../stdlib-fork" }
 "#
             .to_string(),
         )]);
@@ -789,7 +785,7 @@ preferred = ["components/preferred-part"]
                 "/repo/components/preferred-part/pcb.toml".to_string(),
                 r#"
 [dependencies]
-"github.com/diodeinc/stdlib" = "0.5.11"
+stdlib = "0.5.11"
 "#
                 .to_string(),
             ),
@@ -797,7 +793,7 @@ preferred = ["components/preferred-part"]
                 "/repo/modules/regular-module/pcb.toml".to_string(),
                 r#"
 [dependencies]
-"github.com/diodeinc/stdlib" = "0.5.11"
+stdlib = "0.5.11"
 "#
                 .to_string(),
             ),

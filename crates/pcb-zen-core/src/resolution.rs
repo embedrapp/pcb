@@ -675,7 +675,7 @@ mod tests {
 
         impl PackagePathResolver for RecordingResolver {
             fn resolve_package(&self, module_path: &str, version: &str) -> Option<PathBuf> {
-                (module_path == "github.com/diodeinc/registry/modules/CastellatedHoles"
+                (module_path == "github.com/example/packages/modules/CastellatedHoles"
                     && version == self.expected_version)
                     .then_some(self.resolved_path.clone())
             }
@@ -687,7 +687,7 @@ mod tests {
 
         let workspace_root = PathBuf::from("/workspace");
         let package_root = workspace_root.join("boards/IP0003");
-        let dep_url = "github.com/diodeinc/registry/modules/CastellatedHoles".to_string();
+        let dep_url = "github.com/example/packages/modules/CastellatedHoles".to_string();
         let stable_version = Version::parse("0.3.1").unwrap();
         let pseudo_version =
             Version::parse("0.4.3-0.20260318022845-ef7e97a27f6e57783bfbeece051aa2d81a365ace")
@@ -699,7 +699,7 @@ mod tests {
             cache_dir: PathBuf::new(),
             config: None,
             packages: BTreeMap::from([(
-                "github.com/dioderobot/diode/boards/IP0003".to_string(),
+                "github.com/example/hardware/boards/IP0003".to_string(),
                 crate::workspace::MemberPackage {
                     rel_path: PathBuf::from("boards/IP0003"),
                     config: PcbToml {
@@ -707,7 +707,7 @@ mod tests {
                             dep_url.clone(),
                             DependencySpec::Detailed(DependencyDetail {
                                 version: None,
-                                branch: Some("diode/boards/IP0003".into()),
+                                branch: Some("boards/IP0003".into()),
                                 rev: Some("ef7e97a27f6e57783bfbeece051aa2d81a365ace".into()),
                                 path: None,
                             }),
@@ -753,7 +753,7 @@ mod tests {
 
     #[test]
     fn test_rev_dep_ignores_non_pseudo_prerelease() {
-        let dep = "github.com/diodeinc/registry/modules/CastellatedHoles";
+        let dep = "github.com/example/packages/modules/CastellatedHoles";
         let prerelease = Version::parse("1.0.0-alpha-1").unwrap();
         let pseudo =
             Version::parse("1.0.0-0.20260319233030-1cdbd386c7adffd8373fbedf7532122b55092108")

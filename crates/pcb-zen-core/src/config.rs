@@ -255,8 +255,8 @@ impl PcbToml {
     ///
     /// Takes the last path segment as the alias key. Only creates alias if unique (no collisions).
     /// Examples:
-    /// - "github.com/diodeinc/stdlib" → "@stdlib"
-    /// - "github.com/diodeinc/registry/reference/XAL7070-562MEx" → "@XAL7070-562MEx"
+    /// - "stdlib" -> "@stdlib"
+    /// - "github.com/example/packages/XAL7070-562MEx" -> "@XAL7070-562MEx"
     /// - "gitlab.com/kicad/libraries/kicad-symbols" → "@kicad-symbols"
     pub fn auto_generated_aliases(&self) -> HashMap<String, String> {
         let mut aliases = HashMap::new();
@@ -294,7 +294,7 @@ pub struct WorkspaceConfig {
     pub name: Option<String>,
 
     /// Repository URL for workspace (V2 only, required for V2 multi-package workspaces)
-    /// Example: "github.com/diodeinc/registry"
+    /// Example: "github.com/example/packages"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repository: Option<String>,
 
@@ -314,11 +314,6 @@ pub struct WorkspaceConfig {
     #[serde(skip_serializing_if = "Option::is_none", rename = "pcb-version")]
     pub pcb_version: Option<String>,
 
-    /// Base host used for Diode app/API URLs in this workspace.
-    /// Example: "diode.computer" -> app/api hosts resolve under this domain.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<String>,
-
     /// Kicad-style library linkage configuration.
     #[serde(
         default = "default_kicad_library",
@@ -335,7 +330,7 @@ pub struct WorkspaceConfig {
     pub default_board: Option<String>,
 
     /// Patterns for dependencies to auto-vendor during build (supports globs)
-    /// Example: ["github.com/diodeinc/registry/*"]
+    /// Example: ["github.com/example/packages/*"]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vendor: Vec<String>,
 
@@ -358,7 +353,6 @@ impl Default for WorkspaceConfig {
             path: None,
             resolver: None,
             pcb_version: None,
-            endpoint: None,
             kicad_library: default_kicad_library(),
             default_board: None,
             members: default_members(),
@@ -400,10 +394,6 @@ impl KicadLibraryConfig {
     }
 }
 
-pub const DEFAULT_KICAD_HTTP_MIRROR_TEMPLATE: &str =
-    "https://kicad-mirror.api.diode.computer/{repo_name}-{version}.tar.zst";
-pub const DEFAULT_KICAD_PARTS_URL: &str =
-    "https://kicad-mirror.api.diode.computer/kicad-parts-{version}.toml";
 pub const STDLIB_PINNED_KICAD_VERSION: Version = Version::new(9, 0, 3);
 
 fn default_kicad_library_entry(version: Version, model_var: &str) -> KicadLibraryConfig {
@@ -415,8 +405,8 @@ fn default_kicad_library_entry(version: Version, model_var: &str) -> KicadLibrar
             model_var.to_string(),
             "gitlab.com/kicad/libraries/kicad-packages3D".to_string(),
         )]),
-        parts: Some(DEFAULT_KICAD_PARTS_URL.to_string()),
-        http_mirror: Some(DEFAULT_KICAD_HTTP_MIRROR_TEMPLATE.to_string()),
+        parts: None,
+        http_mirror: None,
     }
 }
 
@@ -582,12 +572,12 @@ pub struct AssetDependencyDetail {
 ///
 /// # Example
 /// ```text
-/// github.com/diodeinc/stdlib v0.3.2 h1:abc123...
-/// github.com/diodeinc/stdlib v0.3.2/pcb.toml h1:def456...
+/// stdlib v0.3.2 h1:abc123...
+/// stdlib v0.3.2/pcb.toml h1:def456...
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockEntry {
-    /// Module path (e.g., "github.com/diodeinc/stdlib")
+    /// Module path (e.g., "github.com/example/packages/foo")
     pub module_path: String,
 
     /// Resolved version (may be pseudo-version for branches)
@@ -889,7 +879,7 @@ description = "A test board"
         let content = r#"
 [module]
 name = "stdlib"
-module_path = "github.com/diodeinc/stdlib"
+module_path = "stdlib"
 version = "0.3.0"
 "#;
 
@@ -945,14 +935,8 @@ pcb-version = "0.3"
             workspace.kicad_library[0].models.get("KICAD9_3DMODEL_DIR"),
             Some(&"gitlab.com/kicad/libraries/kicad-packages3D".to_string())
         );
-        assert_eq!(
-            workspace.kicad_library[0].parts.as_deref(),
-            Some(DEFAULT_KICAD_PARTS_URL)
-        );
-        assert_eq!(
-            workspace.kicad_library[0].http_mirror.as_deref(),
-            Some(DEFAULT_KICAD_HTTP_MIRROR_TEMPLATE)
-        );
+        assert_eq!(workspace.kicad_library[0].parts.as_deref(), None);
+        assert_eq!(workspace.kicad_library[0].http_mirror.as_deref(), None);
         assert_eq!(workspace.kicad_library[1].version, Version::new(10, 0, 0));
         assert_eq!(
             workspace.kicad_library[1].models.get("KICAD10_3DMODEL_DIR"),
@@ -1007,8 +991,8 @@ name = "Test"
 path = "test.zen"
 
 [dependencies]
-"github.com/diodeinc/stdlib" = "0.3.2"
-"github.com/diodeinc/registry/reference/ti/tps54331" = { version = "^1.0.0" }
+stdlib = "0.3.2"
+"github.com/example/packages/reference/ti/tps54331" = { version = "^1.0.0" }
 "github.com/user/custom" = { branch = "main" }
 "github.com/user/local" = { path = "../local" }
 "#;
@@ -1017,11 +1001,7 @@ path = "test.zen"
         assert_eq!(config.dependencies.len(), 4);
 
         // Test simple version string
-        match config
-            .dependencies
-            .get("github.com/diodeinc/stdlib")
-            .unwrap()
-        {
+        match config.dependencies.get("stdlib").unwrap() {
             DependencySpec::Version(v) => assert_eq!(v, "0.3.2"),
             _ => panic!("Expected Version variant"),
         }
@@ -1029,7 +1009,7 @@ path = "test.zen"
         // Test detailed spec with version
         match config
             .dependencies
-            .get("github.com/diodeinc/registry/reference/ti/tps54331")
+            .get("github.com/example/packages/reference/ti/tps54331")
             .unwrap()
         {
             DependencySpec::Detailed(d) => {
@@ -1058,13 +1038,13 @@ name = "Test"
 path = "test.zen"
 
 [patch]
-"github.com/diodeinc/stdlib" = { path = "../stdlib" }
+stdlib = { path = "../stdlib" }
 "#;
 
         let config = PcbToml::parse(content).unwrap();
         assert_eq!(config.patch.len(), 1);
 
-        let patch = config.patch.get("github.com/diodeinc/stdlib").unwrap();
+        let patch = config.patch.get("stdlib").unwrap();
         assert_eq!(patch.path.as_deref(), Some("../stdlib"));
     }
 
@@ -1079,7 +1059,7 @@ name = "Test"
 path = "test.zen"
 
 [patch]
-"github.com/diodeinc/registry/components/FOO" = { branch = "feature-branch" }
+"github.com/example/packages/components/FOO" = { branch = "feature-branch" }
 "#;
 
         let config = PcbToml::parse(content).unwrap();
@@ -1087,7 +1067,7 @@ path = "test.zen"
 
         let patch = config
             .patch
-            .get("github.com/diodeinc/registry/components/FOO")
+            .get("github.com/example/packages/components/FOO")
             .unwrap();
         assert_eq!(patch.branch.as_deref(), Some("feature-branch"));
         assert_eq!(patch.path, None);
@@ -1105,7 +1085,7 @@ name = "Test"
 path = "test.zen"
 
 [patch]
-"github.com/diodeinc/registry/components/BAR" = { rev = "abc123def456" }
+"github.com/example/packages/components/BAR" = { rev = "abc123def456" }
 "#;
 
         let config = PcbToml::parse(content).unwrap();
@@ -1113,7 +1093,7 @@ path = "test.zen"
 
         let patch = config
             .patch
-            .get("github.com/diodeinc/registry/components/BAR")
+            .get("github.com/example/packages/components/BAR")
             .unwrap();
         assert_eq!(patch.rev.as_deref(), Some("abc123def456"));
         assert_eq!(patch.path, None);
@@ -1182,10 +1162,10 @@ name = "TestBoard"
 # pcb-version = "0.3"
 #
 # [dependencies]
-# "github.com/diodeinc/stdlib" = "0.3"
+# stdlib = "0.3"
 # ```
 
-load("github.com/diodeinc/stdlib/units.zen", "Voltage")
+load("@stdlib/units.zen", "Voltage")
 "#;
 
         let result = extract_inline_manifest(zen_content);
@@ -1256,7 +1236,7 @@ load("foo.zen", "Bar")
         // V1 style inline manifest (no pcb-version)
         let zen_content = r#"# ```pcb
 # [packages]
-# stdlib = "@github/diodeinc/stdlib:v0.3.2"
+# stdlib = "@github/example/stdlib:v0.3.2"
 # ```
 
 load("@stdlib/foo.zen", "Bar")

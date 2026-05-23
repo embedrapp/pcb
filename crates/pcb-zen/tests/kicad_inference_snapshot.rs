@@ -18,7 +18,6 @@ version = "9.0.3"
 symbols = "gitlab.com/kicad/libraries/kicad-symbols"
 footprints = "gitlab.com/kicad/libraries/kicad-footprints"
 models = { KICAD9_3DMODEL_DIR = "gitlab.com/kicad/libraries/kicad-packages3D" }
-http_mirror = "https://kicad-mirror.api.diode.computer/{repo_name}-{version}.tar.zst"
 "#,
     );
 

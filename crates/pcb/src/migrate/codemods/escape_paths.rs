@@ -256,12 +256,12 @@ mod tests {
         let url = build_url(
             &resolved,
             &workspace_root,
-            "github.com/diodeinc/registry",
+            "github.com/example/packages",
             None,
         );
         assert_eq!(
             url,
-            Some("github.com/diodeinc/registry/components/LED/LED.zen".to_string())
+            Some("github.com/example/packages/components/LED/LED.zen".to_string())
         );
 
         // With workspace path
@@ -289,7 +289,7 @@ mod tests {
         // Already a URL -> no conversion
         assert!(
             try_convert_path(
-                "github.com/diodeinc/registry/foo.zen",
+                "github.com/example/packages/foo.zen",
                 &zen_dir,
                 &package_root,
                 &workspace_root,

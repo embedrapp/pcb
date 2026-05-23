@@ -8,6 +8,10 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- Removed Diode-hosted service commands and dependencies from the downstream local-only CLI.
+
 ### Fixed
 
 - `pcb doc --package <url>` now prefers matching local workspace members for bare package URLs.

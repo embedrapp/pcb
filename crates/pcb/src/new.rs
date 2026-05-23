@@ -6,7 +6,7 @@ use inquire::{Select, Text};
 use minijinja::{Environment, context};
 use pcb_zen_core::DefaultFileProvider;
 use pcb_zen_core::config::{PcbToml, find_workspace_root};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::codegen;
@@ -41,13 +41,11 @@ fn create_template_env() -> Environment<'static> {
 #[derive(Args, Debug)]
 #[command(
     about = "Create a new PCB workspace, board, package, or component",
-    long_about = "Create a new PCB workspace, board, package, or component.\n\n\
+    long_about = "Create a new PCB workspace, board, or package.\n\n\
         Examples:\n  \
         pcb new workspace my-project --repo https://github.com/user/my-project\n  \
         pcb new board MainBoard\n  \
-        pcb new package modules/power_supply\n  \
-        pcb new component\n  \
-        pcb new component path/to/component-dir"
+        pcb new package modules/power_supply"
 )]
 pub struct NewArgs {
     #[command(subcommand)]
@@ -64,9 +62,6 @@ pub enum NewCommand {
 
     /// Create a new package at the given path (requires existing workspace)
     Package(NewPackageArgs),
-
-    /// Create a new component by searching online, or import from local directory
-    Component(NewComponentArgs),
 }
 
 #[derive(Args, Debug)]
@@ -92,25 +87,6 @@ pub struct NewPackageArgs {
     /// Package path (for example: modules/power_supply)
     #[arg(value_name = "PATH")]
     pub path: String,
-}
-
-#[derive(Args, Debug, Default)]
-pub struct NewComponentArgs {
-    /// Local component directory to import
-    #[arg(value_name = "DIR", conflicts_with = "component_id")]
-    pub dir: Option<PathBuf>,
-
-    /// Download and add a component returned by web component search
-    #[arg(long, value_name = "ID")]
-    pub component_id: Option<String>,
-
-    /// Optional fallback MPN if the download response does not include one
-    #[arg(long, value_name = "MPN", requires = "component_id")]
-    pub part_number: Option<String>,
-
-    /// Optional manufacturer override or fallback
-    #[arg(long, value_name = "MFR", requires = "component_id")]
-    pub manufacturer: Option<String>,
 }
 
 /// Validate a name for use as directory/git repo name (used for workspaces and boards)
@@ -182,7 +158,6 @@ pub fn execute(args: NewArgs) -> Result<()> {
         Some(NewCommand::Workspace(command)) => execute_new_workspace(&command.name, &command.repo),
         Some(NewCommand::Board(command)) => execute_new_board(&command.name),
         Some(NewCommand::Package(command)) => execute_new_package(&command.path),
-        Some(NewCommand::Component(command)) => execute_new_component(command),
         None => execute_interactive(),
     }
 }
@@ -208,34 +183,8 @@ fn require_workspace() -> Result<(std::path::PathBuf, PcbToml)> {
     get_workspace().ok_or_else(|| anyhow::anyhow!("Not inside a pcb workspace"))
 }
 
-#[cfg(feature = "api")]
-fn execute_new_component(args: NewComponentArgs) -> Result<()> {
-    if let Some(dir) = args.dir.as_deref() {
-        return pcb_diode_api::execute_component_from_local_dir(dir);
-    }
-
-    if let Some(component_id) = args.component_id.as_deref() {
-        return pcb_diode_api::execute_component_from_id(
-            component_id,
-            args.part_number.as_deref(),
-            args.manufacturer.as_deref(),
-        );
-    }
-
-    let (workspace_root, _) = require_workspace()?;
-    pcb_diode_api::execute_web_components_tui(&workspace_root)
-}
-
-#[cfg(not(feature = "api"))]
-fn execute_new_component(_args: NewComponentArgs) -> Result<()> {
-    bail!("Component creation requires the 'api' feature")
-}
-
 fn execute_interactive() -> Result<()> {
     if get_workspace().is_some() {
-        #[cfg(feature = "api")]
-        let options = vec!["board", "package", "component"];
-        #[cfg(not(feature = "api"))]
         let options = vec!["board", "package"];
 
         let selection = Select::new("What would you like to create?", options)
@@ -245,8 +194,6 @@ fn execute_interactive() -> Result<()> {
         match selection {
             "board" => prompt_new_board(),
             "package" => prompt_new_package(),
-            #[cfg(feature = "api")]
-            "component" => execute_new_component(NewComponentArgs::default()),
             _ => unreachable!(),
         }
     } else {
@@ -579,31 +526,11 @@ mod tests {
     }
 
     #[test]
-    fn test_component_accepts_optional_directory() {
-        let parsed = TestCli::try_parse_from(["pcb", "component"]).unwrap();
-        assert!(matches!(
-            parsed.args.command,
-            Some(NewCommand::Component(NewComponentArgs { dir: None, .. }))
-        ));
-
-        let parsed = TestCli::try_parse_from(["pcb", "component", "components/foo"]).unwrap();
-        assert!(matches!(
-            parsed.args.command,
-            Some(NewCommand::Component(NewComponentArgs {
-                dir: Some(ref dir),
-                ..
-            })) if dir == &PathBuf::from("components/foo")
-        ));
-
-        let parsed = TestCli::try_parse_from(["pcb"]).unwrap();
-        assert!(parsed.args.command.is_none());
-    }
-
-    #[test]
     fn test_old_flag_forms_are_rejected() {
         assert!(TestCli::try_parse_from(["pcb", "--workspace", "my-project"]).is_err());
         assert!(TestCli::try_parse_from(["pcb", "--board", "MainBoard"]).is_err());
         assert!(TestCli::try_parse_from(["pcb", "--package", "modules/power_supply"]).is_err());
         assert!(TestCli::try_parse_from(["pcb", "--component"]).is_err());
+        assert!(TestCli::try_parse_from(["pcb", "component"]).is_err());
     }
 }

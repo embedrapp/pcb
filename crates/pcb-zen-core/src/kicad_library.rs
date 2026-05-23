@@ -328,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn test_http_mirror_template_can_match_default_kicad10_entry() {
+    fn test_default_kicad10_entry_has_no_http_mirror() {
         let entries = WorkspaceConfig::default().kicad_library;
 
         let template = kicad_http_mirror_template_for_repo(
@@ -338,6 +338,6 @@ mod tests {
         )
         .unwrap();
 
-        assert!(template.is_some());
+        assert!(template.is_none());
     }
 }

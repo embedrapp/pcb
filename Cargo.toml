@@ -3,11 +3,11 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.71-rishabh.2"
+version = "0.3.71-rishabh.3"
 edition = "2024"
-repository = "https://github.com/diodeinc/pcb"
-homepage = "https://github.com/diodeinc/pcb"
-authors = ["Diode Computers, Inc. <founders@diode.computer>"]
+repository = "https://github.com/rshabhsinha/pcb"
+homepage = "https://github.com/rshabhsinha/pcb"
+authors = ["Rishabh Sinha"]
 
 [workspace.dependencies]
 glam = "0.31.0"
@@ -42,7 +42,6 @@ pcb-starlark-lsp = { path = "crates/pcb-starlark-lsp" }
 pcb-fmt = { path = "crates/pcb-fmt" }
 pcb-test-utils = { path = "crates/pcb-test-utils" }
 pcb-sim = { path = "crates/pcb-sim" }
-pcb-diode-api = { path = "crates/pcb-diode-api" }
 pcb-mcp = { path = "crates/pcb-mcp" }
 pcb-docs = { path = "crates/pcb-docs" }
 pcb-ipc2581-tools = { path = "crates/pcb-ipc2581-tools" }
@@ -52,7 +51,6 @@ anyhow = "1.0"
 atomicwrites = "0.4"
 arboard = "3.4"
 ariadne = { version = "0.6", features = ["auto-color"] }
-axoupdater = { version = "0.9", features = ["blocking"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "wrap_help"] }
 colored = "2"

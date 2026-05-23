@@ -18,7 +18,7 @@ pub use types::*;
 
 /// Generate documentation for a Zener package.
 ///
-/// - `package_url`: Used as the h1 header (e.g. "github.com/diodeinc/stdlib")
+/// - `package_url`: Used as the h1 header (e.g. "stdlib")
 /// - `display_path`: Path shown in source comment; defaults to package_root if None
 /// - `filter`: Optional path prefix to filter files (e.g. "generics" or "Module.zen")
 pub fn generate_docs(

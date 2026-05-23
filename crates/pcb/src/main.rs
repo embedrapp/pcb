@@ -8,9 +8,6 @@ use env_logger::Env;
 use std::ffi::OsString;
 use std::process::Command;
 
-#[cfg(feature = "api")]
-mod api;
-mod bom;
 mod build;
 mod bundle;
 mod codegen;
@@ -31,13 +28,6 @@ mod migrate;
 mod new;
 mod open;
 mod package;
-#[cfg(feature = "api")]
-mod preview;
-mod publish;
-mod release;
-#[cfg(feature = "api")]
-mod route;
-mod self_update;
 mod sim;
 mod test;
 mod update;
@@ -67,10 +57,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Manage authentication
-    #[cfg(feature = "api")]
-    Auth(api::AuthArgs),
-
     /// Build PCB projects
     #[command(alias = "b")]
     Build(build::BuildArgs),
@@ -83,18 +69,11 @@ enum Commands {
     #[command(alias = "m")]
     Migrate(migrate::MigrateArgs),
 
-    /// Create a new workspace, board, package, or component
+    /// Create a new workspace, board, or package
     New(new::NewArgs),
 
     /// Update dependencies to latest compatible versions
     Update(update::UpdateArgs),
-
-    /// Update the pcb tool itself
-    #[command(name = "self")]
-    SelfUpdate(self_update::SelfUpdateArgs),
-
-    /// Generate Bill of Materials (BOM)
-    Bom(bom::BomArgs),
 
     /// Display workspace and board information
     Info(info::InfoArgs),
@@ -120,14 +99,6 @@ enum Commands {
     #[command(alias = "o")]
     Open(open::OpenArgs),
 
-    /// Publish packages and boards by creating version tags
-    #[command(alias = "p")]
-    Publish(publish::PublishArgs),
-
-    /// Build and upload a preview release for a board
-    #[cfg(feature = "api")]
-    Preview(preview::PreviewArgs),
-
     /// Vendor external dependencies
     Vendor(vendor::VendorArgs),
 
@@ -137,19 +108,6 @@ enum Commands {
     /// Embed a STEP model into a KiCad footprint
     #[command(hide = true)]
     EmbedStep(embed_step::EmbedStepArgs),
-
-    /// Scan datasheets from local PDFs or URLs
-    #[cfg(feature = "api")]
-    Scan(api::ScanArgs),
-
-    /// Search for electronic components
-    #[cfg(feature = "api")]
-    Search(api::SearchArgs),
-
-    /// Auto-route PCB using DeepPCB cloud service
-    #[cfg(feature = "api")]
-    #[command(hide = true)]
-    Route(route::RouteArgs),
 
     /// Run SPICE simulations
     #[command(alias = "sim", alias = "s")]
@@ -200,22 +158,12 @@ fn run() -> anyhow::Result<()> {
     // Initialize profiling if --profile is passed (guard must be held until end of run)
     let _profile_guard = profiling::init(cli.profile);
 
-    // Skip auto-update check in CI environments or when running the update command
-    if std::env::var("CI").is_err() && !is_update_command(&cli.command) {
-        check_and_update();
-        ensure_docs_installed();
-    }
-
     match cli.command {
-        #[cfg(feature = "api")]
-        Commands::Auth(args) => api::execute_auth(args),
         Commands::Build(args) => build::execute(args),
         Commands::Test(args) => test::execute(args),
         Commands::Migrate(args) => migrate::execute(args),
         Commands::New(args) => new::execute(args),
         Commands::Update(args) => update::execute(args),
-        Commands::SelfUpdate(args) => self_update::execute(args),
-        Commands::Bom(args) => bom::execute(args),
         Commands::Info(args) => info::execute(args),
         Commands::Import(args) => import::execute(args),
         Commands::Doc(args) => doc::execute(args),
@@ -223,21 +171,12 @@ fn run() -> anyhow::Result<()> {
         Commands::Fmt(args) => fmt::execute(args),
         Commands::Lsp(args) => lsp::execute(args),
         Commands::Open(args) => open::execute(args),
-        Commands::Publish(args) => publish::execute(args),
-        #[cfg(feature = "api")]
-        Commands::Preview(args) => preview::execute(args),
         Commands::Vendor(args) => vendor::execute(args),
         Commands::Fork => {
             println!("`pcb fork` is a reserved subcommand for future use.");
             Ok(())
         }
-        #[cfg(feature = "api")]
-        Commands::Scan(args) => api::execute_scan(args),
-        #[cfg(feature = "api")]
-        Commands::Search(args) => api::execute_search(args),
         Commands::EmbedStep(args) => embed_step::execute(args),
-        #[cfg(feature = "api")]
-        Commands::Route(args) => route::execute(args),
         Commands::Simulate(args) => sim::execute(args),
         Commands::Mcp(args) => mcp::execute(args),
         Commands::Ipc2581(args) => ipc2581::execute(args),
@@ -282,37 +221,5 @@ fn run() -> anyhow::Result<()> {
                 }
             }
         }
-    }
-}
-
-fn is_update_command(command: &Commands) -> bool {
-    matches!(command, Commands::Update(_) | Commands::SelfUpdate(_))
-}
-
-fn ensure_docs_installed() {
-    if let Some(home) = dirs::home_dir() {
-        let docs_dir = home.join(".pcb/docs");
-        let is_empty = docs_dir
-            .read_dir()
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(true);
-        if is_empty {
-            let _ = doc::execute(doc::DocArgs {
-                path: String::new(),
-                list: false,
-                package: None,
-                install: true,
-            });
-        }
-    }
-}
-
-fn check_and_update() {
-    let mut updater = axoupdater::AxoUpdater::new_for("pcb");
-    if let Ok(updater) = updater.load_receipt()
-        && let Ok(true) = updater.is_update_needed_sync()
-    {
-        eprintln!("{}", "A new version of pcb is available!".blue().bold());
-        eprintln!("Run {} to update.", "pcb self update".yellow().bold());
     }
 }

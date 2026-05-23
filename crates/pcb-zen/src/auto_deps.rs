@@ -494,11 +494,6 @@ mod tests {
         assert!(result.aliases.is_empty());
         assert!(result.urls.is_empty());
 
-        result = CollectedImports::default();
-        extract_from_str("github.com/diodeinc/stdlib/units.zen", &mut result);
-        assert!(result.aliases.is_empty());
-        assert!(result.urls.is_empty());
-
         // Dynamic alias path still tracks alias.
         result = CollectedImports::default();
         extract_from_str("@kicad-footprints/{}.pretty/{}.kicad_mod", &mut result);

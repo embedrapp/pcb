@@ -11,10 +11,7 @@ pub mod codemods;
 
 use crate::file_walker;
 pub use codemods::MigrateContext;
-use codemods::{
-    Codemod, alias_expansion::AliasExpansion, escape_paths::EscapePaths, manifest_v2,
-    path_correction::PathCorrection, workspace_paths::WorkspacePaths,
-};
+use codemods::{Codemod, escape_paths::EscapePaths, manifest_v2, workspace_paths::WorkspacePaths};
 
 /// Arguments for the `migrate` command
 #[derive(Args, Debug, Default, Clone)]
@@ -67,12 +64,7 @@ pub fn execute(args: MigrateArgs) -> Result<()> {
 
         // Step 5: Run all codemods on .zen files
         eprintln!("\nStep 5: Running codemods on .zen files");
-        let codemods: Vec<Box<dyn Codemod>> = vec![
-            Box::new(WorkspacePaths),
-            Box::new(EscapePaths),
-            Box::new(AliasExpansion),
-            Box::new(PathCorrection),
-        ];
+        let codemods: Vec<Box<dyn Codemod>> = vec![Box::new(WorkspacePaths), Box::new(EscapePaths)];
         run_codemods(&ctx, &zen_files, &codemods)?;
     }
 

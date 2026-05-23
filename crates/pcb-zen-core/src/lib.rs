@@ -23,8 +23,6 @@ pub mod workspace;
 
 /// Canonical virtual module path for stdlib.
 pub const STDLIB_MODULE_PATH: &str = "stdlib";
-/// Legacy stdlib module path accepted for backward compatibility in load specs.
-pub const LEGACY_STDLIB_MODULE_PATH: &str = "github.com/diodeinc/stdlib";
 /// Initial version assigned to unpublished packages.
 pub const INITIAL_PACKAGE_VERSION: &str = "0.1.0";
 /// Version of this PCB toolchain release.
@@ -37,7 +35,7 @@ pub fn initial_package_version() -> Version {
 }
 
 pub fn is_stdlib_module_path(path: &str) -> bool {
-    path == STDLIB_MODULE_PATH || path == LEGACY_STDLIB_MODULE_PATH
+    path == STDLIB_MODULE_PATH
 }
 
 /// Return the workspace-local stdlib root.

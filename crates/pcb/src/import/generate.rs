@@ -1924,9 +1924,9 @@ fn derive_part_name(part_key: &ImportPartKey, component: &ImportComponentData) -
 }
 
 fn sanitize_component_dir_name(raw: &str) -> String {
-    // Reuse the strict, shared sanitizer used by `pcb search` component generation.
-    // This keeps import outputs consistent and ensures names are compatible with
-    // Zener `Component(name=...)` validation rules.
+    // Reuse the strict shared sanitizer for generated component directories.
+    // This keeps import outputs compatible with Zener `Component(name=...)`
+    // validation rules.
     let mut out = component_gen::sanitize_mpn_for_path(raw);
     if out.len() > 100 {
         out.truncate(100);

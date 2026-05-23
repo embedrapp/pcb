@@ -940,8 +940,7 @@ pub fn resolve_dependencies(
 /// No-op if combined patterns is empty. Incremental - skips existing entries.
 ///
 /// If `target_vendor_dir` is provided, vendors to that directory instead of
-/// `workspace_info.root/vendor`. This is used by `pcb publish` to vendor into
-/// the staging directory.
+/// `workspace_info.root/vendor`.
 ///
 /// This function performs an incremental sync:
 /// - Adds matching packages from the resolution that are missing in vendor/
@@ -2702,7 +2701,19 @@ mod tests {
         )
         .unwrap();
 
-        let mut workspace = workspace_with_root_config(PcbToml::default());
+        let mut config = PcbToml::default();
+        config.workspace = Some(pcb_zen_core::config::WorkspaceConfig {
+            kicad_library: vec![pcb_zen_core::config::KicadLibraryConfig {
+                version: Version::new(9, 0, 3),
+                symbols: "gitlab.com/kicad/libraries/kicad-symbols".to_string(),
+                footprints: "gitlab.com/kicad/libraries/kicad-footprints".to_string(),
+                models: BTreeMap::new(),
+                parts: Some("https://example.com/{repo_name}-{version}-parts.toml".to_string()),
+                http_mirror: None,
+            }],
+            ..Default::default()
+        });
+        let mut workspace = workspace_with_root_config(config);
         workspace.root = root.clone();
         workspace.cache_dir = root.join(".pcb/cache");
 
@@ -2891,7 +2902,7 @@ mod tests {
 
     #[test]
     fn test_rev_dep_picks_matching_selected_line() {
-        let dep = "github.com/diodeinc/registry/modules/CastellatedHoles";
+        let dep = "github.com/example/packages/modules/CastellatedHoles";
         let stable = Version::parse("0.3.1").unwrap();
         let pseudo =
             Version::parse("0.4.3-0.20260319233030-0cdbd386c7adffd8373fbedf7532122b55092108")
@@ -2903,7 +2914,7 @@ mod tests {
             HashMap::from([(stable_line.clone(), stable), (pseudo_line.clone(), pseudo)]);
         let spec = DependencySpec::Detailed(DependencyDetail {
             version: None,
-            branch: Some("diode/boards/IP0003".into()),
+            branch: Some("boards/IP0003".into()),
             rev: Some(rev.into()),
             path: None,
         });
@@ -2918,7 +2929,7 @@ mod tests {
             Version::parse("0.4.3-0.20260319233030-0cdbd386c7adffd8373fbedf7532122b55092108")
                 .unwrap();
         let rev = "0cdbd386c7adffd8373fbedf7532122b55092108";
-        let module_path = "github.com/diodeinc/registry/modules/CastellatedHoles";
+        let module_path = "github.com/example/packages/modules/CastellatedHoles";
         let lockfile = Lockfile {
             entries: BTreeMap::from([
                 (
@@ -2943,7 +2954,7 @@ mod tests {
         };
         let spec = DependencySpec::Detailed(DependencyDetail {
             version: None,
-            branch: Some("diode/boards/IP0003".into()),
+            branch: Some("boards/IP0003".into()),
             rev: Some(rev.into()),
             path: None,
         });

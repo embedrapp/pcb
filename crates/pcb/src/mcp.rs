@@ -334,23 +334,13 @@ impl<'a> ImageFileRewriter<'a> {
 }
 
 fn create_tool_config() -> (Vec<ToolInfo>, ToolHandler) {
-    #[allow(unused_mut)]
-    let mut tools = local_tools();
-
-    #[cfg(feature = "api")]
-    tools.extend(pcb_diode_api::mcp::tools());
+    let tools = local_tools();
 
     let handler: ToolHandler = Box::new(|name, args, ctx| {
         if let Some(result) = handle_local(name, args.clone(), ctx) {
             return result;
         }
 
-        #[cfg(feature = "api")]
-        {
-            pcb_diode_api::mcp::handle(name, args, ctx)
-        }
-
-        #[cfg(not(feature = "api"))]
         anyhow::bail!("Unknown tool: {}", name)
     });
 

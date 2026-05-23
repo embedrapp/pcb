@@ -173,7 +173,7 @@ fn test_pcb_build_simple_workspace() {
         .write("boards/pcb.toml", TEST_BOARD_PCB_TOML)
         .write("boards/modules/LedModule.zen", LED_MODULE_ZEN)
         .write("boards/TestBoard.zen", TEST_BOARD_ZEN)
-        .hash_globs(["*.kicad_mod", "**/diodeinc/stdlib/*.zen"])
+        .hash_globs(["*.kicad_mod", "**/.pcb/stdlib/**/*.zen"])
         .snapshot_run("pcb", ["build", "boards/TestBoard.zen"]);
     assert_snapshot!("simple_workspace_build", output);
 }

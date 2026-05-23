@@ -50,7 +50,7 @@ fn write_module_workspace(sb: &mut Sandbox) {
             "modules/Parent/layout/Parent/layout.kicad_pcb",
             "(kicad_pcb)",
         )
-        .hash_globs(["**/diodeinc/stdlib/*.zen"])
+        .hash_globs(["**/.pcb/stdlib/**/*.zen"])
         .init_git()
         .commit("Initial commit");
 }
@@ -59,7 +59,7 @@ fn write_workspace_with_manifest_only_package(sb: &mut Sandbox) {
     sb.cwd("src")
         .write("pcb.toml", WORKSPACE_PCB_TOML)
         .write("modules/Utility/pcb.toml", CHILD_PCB_TOML)
-        .hash_globs(["**/diodeinc/stdlib/*.zen"])
+        .hash_globs(["**/.pcb/stdlib/**/*.zen"])
         .init_git()
         .commit("Initial commit");
 }

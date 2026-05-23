@@ -1,6 +1,6 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "name": "Diode Computers, Inc.",
+  "name": "Local PCB",
   "theme": "linden",
   "logo": {
     "dark": "/logo/dark.svg",
@@ -21,12 +21,6 @@
       "light": "#F4F4F4"
     }
   },
-  "topbarLinks": [
-    {
-      "name": "Email Us",
-      "url": "mailto:founders@diode.computer"
-    }
-  ],
   "navigation": {
     "groups": [
       {
@@ -46,11 +40,5 @@
         "pages": ["pages/docs_bringup", "pages/docs_readme"]
       }
     ]
-  },
-  "footerSocials": {
-    "x": "https://x.com/diodeinc",
-    "github": "https://github.com/diodeinc",
-    "linkedin": "https://www.linkedin.com/company/diode-inc"
   }
 }
-

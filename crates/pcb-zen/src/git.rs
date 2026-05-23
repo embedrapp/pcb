@@ -571,13 +571,7 @@ pub fn commit_with_trailers(repo_root: &Path, message: &str) -> anyhow::Result<S
     run_in(repo_root, &["add", "-A"])?;
     run_in(
         repo_root,
-        &[
-            "commit",
-            "-m",
-            message,
-            "--trailer",
-            "Generated-by: pcb publish",
-        ],
+        &["commit", "-m", message, "--trailer", "Generated-by: pcb"],
     )?;
     rev_parse(repo_root, "HEAD").ok_or_else(|| anyhow::anyhow!("Failed to get commit SHA"))
 }
@@ -729,24 +723,24 @@ mod tests {
     #[test]
     fn test_parse_remote_url_https() {
         assert_eq!(
-            parse_remote_url("https://github.com/diodeinc/stdlib.git").unwrap(),
-            "github.com/diodeinc/stdlib"
+            parse_remote_url("https://github.com/example/stdlib.git").unwrap(),
+            "github.com/example/stdlib"
         );
         assert_eq!(
-            parse_remote_url("https://github.com/diodeinc/stdlib").unwrap(),
-            "github.com/diodeinc/stdlib"
+            parse_remote_url("https://github.com/example/stdlib").unwrap(),
+            "github.com/example/stdlib"
         );
     }
 
     #[test]
     fn test_parse_remote_url_ssh() {
         assert_eq!(
-            parse_remote_url("git@github.com:diodeinc/stdlib.git").unwrap(),
-            "github.com/diodeinc/stdlib"
+            parse_remote_url("git@github.com:example/stdlib.git").unwrap(),
+            "github.com/example/stdlib"
         );
         assert_eq!(
-            parse_remote_url("git@github.com:diodeinc/stdlib").unwrap(),
-            "github.com/diodeinc/stdlib"
+            parse_remote_url("git@github.com:example/stdlib").unwrap(),
+            "github.com/example/stdlib"
         );
     }
 

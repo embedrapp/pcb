@@ -1,10 +1,8 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-pub mod alias_expansion;
 pub mod escape_paths;
 pub mod manifest_v2;
-pub mod path_correction;
 pub mod workspace_paths;
 
 /// Context passed to all codemods during migration

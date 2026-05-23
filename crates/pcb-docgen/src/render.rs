@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 /// Render the complete documentation.
 ///
-/// - `package_url`: The fully qualified package URL (e.g. "github.com/diodeinc/stdlib")
+/// - `package_url`: The fully qualified package URL (e.g. "stdlib")
 /// - `local_path`: The local filesystem path where the package source is located
 pub fn render_docs(
     files: &[FileDoc],

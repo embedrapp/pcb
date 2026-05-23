@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_parse_hashes_from_tag_body() {
-        let body = "github.com/diodeinc/registry/harness v0.1.0 h1:mIGycQL5u80O2Jx/p3sUzJ566E74nA/Qof630p+ojSg=\ngithub.com/diodeinc/registry/harness v0.1.0/pcb.toml h1:rxNJufX5oaagQE3qNtzJSZvLJcmtwRK3zJqTyuQfMmI=\n";
+        let body = "github.com/example/packages/harness v0.1.0 h1:mIGycQL5u80O2Jx/p3sUzJ566E74nA/Qof630p+ojSg=\ngithub.com/example/packages/harness v0.1.0/pcb.toml h1:rxNJufX5oaagQE3qNtzJSZvLJcmtwRK3zJqTyuQfMmI=\n";
 
         let hashes = parse_hashes_from_tag_body(body).expect("should parse hashes");
         assert_eq!(

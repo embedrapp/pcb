@@ -106,8 +106,6 @@ In return, the system provides tools that make cooperation easier:
 
 - **Gradual migration**: Multiple major versions can coexist in a single build,
   allowing dependent packages to upgrade at their own pace
-- **Publishing workflow**: The `pcb publish` command validates packages before
-  release, catching common mistakes early
 
 No amount of clever algorithms can fix a package that violates its compatibility
 promises. The goal is to make keeping promises easy and breaking them hard.
@@ -125,11 +123,11 @@ workspace contains:
 ```toml
 # Board WV0001 (not yet migrated)
 [dependencies]
-"github.com/diodeinc/stdlib" = "0.3"
+"stdlib" = "0.3"
 
 # Board WV0002 (migrated to new API)
 [dependencies]
-"github.com/diodeinc/stdlib" = "1.0"
+"stdlib" = "1.0"
 ```
 
 Both boards can build together. The system maintains separate copies of
@@ -203,7 +201,7 @@ If you want newer versions, you explicitly upgrade:
 
 ```toml
 [dependencies]
-"github.com/diodeinc/stdlib" = "0.3.9"
+"stdlib" = "0.3.9"
 ```
 
 Now MVS selects 0.3.9 because *you* require it. You're taking responsibility for
@@ -257,7 +255,7 @@ Both versions coexist in the final build because they're in different semver fam
 Import paths serve as globally unique package identifiers:
 
 ```python
-load("github.com/diodeinc/stdlib/units.zen", "Voltage")
+load("@stdlib/units.zen", "Voltage")
 load("github.com/myorg/components/capacitor.zen", "Capacitor")
 ```
 
@@ -277,8 +275,8 @@ manifest declares which version of each package to use:
 
 ```toml
 [dependencies]
-"github.com/diodeinc/stdlib" = "0.3"
-"github.com/diodeinc/registry/reference/ti/tps54331" = "1.0"
+"stdlib" = "0.3"
+"github.com/myorg/reference/ti/tps54331" = "1.0"
 ```
 
 This separation means:
@@ -291,10 +289,10 @@ This separation means:
 The lockfile (`pcb.sum`) records exact versions and cryptographic hashes:
 
 ```
-github.com/diodeinc/stdlib v0.3.2 h1:sL5Wum7w69ati4f0ExSvRMgfk8kD8MoW0neD6yS94Yo=
-github.com/diodeinc/stdlib v0.3.2/pcb.toml h1:abc123def456...
-github.com/diodeinc/registry/reference/ti/tps54331 v1.0.0 h1:ghi789jkl012...
-github.com/diodeinc/registry/reference/ti/tps54331 v1.0.0/pcb.toml h1:mno345pqr678...
+stdlib v0.3.2 h1:sL5Wum7w69ati4f0ExSvRMgfk8kD8MoW0neD6yS94Yo=
+stdlib v0.3.2/pcb.toml h1:abc123def456...
+github.com/myorg/reference/ti/tps54331 v1.0.0 h1:ghi789jkl012...
+github.com/myorg/reference/ti/tps54331 v1.0.0/pcb.toml h1:mno345pqr678...
 ```
 
 Each dependency has two entries:
@@ -331,8 +329,6 @@ version = "9.0.3" # concrete version; major is used for symbol↔footprint match
 symbols = "gitlab.com/kicad/libraries/kicad-symbols"
 footprints = "gitlab.com/kicad/libraries/kicad-footprints"
 models = { KICAD9_3DMODEL_DIR = "gitlab.com/kicad/libraries/kicad-packages3D" }
-parts = "https://kicad-mirror.api.diode.computer/kicad-parts-{version}.toml"
-http_mirror = "https://kicad-mirror.api.diode.computer/{repo_name}-{version}.tar.zst"
 ```
 
 The default KiCad 10 entry uses the same shape, but with:
@@ -343,8 +339,6 @@ version = "10.0.0"
 symbols = "gitlab.com/kicad/libraries/kicad-symbols"
 footprints = "gitlab.com/kicad/libraries/kicad-footprints"
 models = { KICAD10_3DMODEL_DIR = "gitlab.com/kicad/libraries/kicad-packages3D" }
-parts = "https://kicad-mirror.api.diode.computer/kicad-parts-{version}.toml"
-http_mirror = "https://kicad-mirror.api.diode.computer/{repo_name}-{version}.tar.zst"
 ```
 
 `parts` is optional. When set, the file is fetched alongside the selected symbols repo and parsed as a virtual `pcb.toml` containing `parts = [...]` entries for manifest-backed symbol→part inheritance. It supports the same `{repo}`, `{repo_name}`, `{version}`, and `{major}` placeholders as `http_mirror`.
@@ -370,22 +364,9 @@ Vendoring policy is controlled by the root workspace manifest:
 vendor = ["github.com/myorg/**"]
 ```
 
-- `pcb build` and `pcb publish` use the same `[workspace].vendor` patterns.
+- `pcb build` uses `[workspace].vendor` patterns when resolving dependencies.
 - `pcb vendor` without `--all` uses `[workspace].vendor`.
 - `pcb vendor --all` vendors everything.
-
-## Endpoint (`[workspace].endpoint`)
-
-Workspace manifests can override the Diode host suffix used by CLI commands that talk to Diode services:
-
-```toml
-[workspace]
-endpoint = "diode.computer"
-```
-
-- `endpoint = "diode.computer"` resolves app/API URLs under `app.diode.computer` and `api.diode.computer`.
-- This applies to workspace-aware commands such as `pcb auth`, `pcb bom`, `pcb publish`, `pcb preview`, and routing flows.
-- Authentication is scoped per resolved endpoint, so logging into one workspace endpoint does not overwrite tokens for another.
 
 ## Pseudo-Versions
 
@@ -398,10 +379,10 @@ Format: `v<base>-0.<timestamp>-<commit>`
 ```toml
 [dependencies]
 # Branch reference - resolved to pseudo-version
-"github.com/diodeinc/stdlib" = { branch = "main" }
+"github.com/myorg/common-lib" = { branch = "main" }
 
 # Specific commit
-"github.com/diodeinc/stdlib" = { rev = "a1b2c3d4" }
+"github.com/myorg/common-lib" = { rev = "a1b2c3d4" }
 ```
 
 When resolved, these become pseudo-versions like:
@@ -431,7 +412,7 @@ code. For production builds, prefer tagged releases.
 
 Upgrades a legacy V1 project to the supported V2 format. Updates `pcb.toml` manifests and
 rewrites `.zen` files to use the new import syntax. V1 workspaces are no longer supported by
-`pcb build`, `pcb layout`, `pcb publish`, etc.
+`pcb build`, `pcb layout`, and other workspace-aware local commands.
 
 ```bash
 pcb migrate                  # Migrate current workspace
@@ -467,7 +448,7 @@ Updates dependencies to newer versions.
 
 ```bash
 pcb update                   # Update all dependencies
-pcb update -p diodeinc       # Update deps matching a substring (workspace-wide)
+pcb update -p myorg       # Update deps matching a substring (workspace-wide)
 pcb update path/to/package   # Update only that workspace member package
 ```
 
@@ -480,33 +461,6 @@ containing a `pcb.toml` that is also listed as a workspace member), `pcb update`
 limits updates to that single package's direct dependencies:
 - Auto-applies patch bumps only
 - Prompts only for breaking bumps
-
-### pcb publish
-
-Publishes packages by creating annotated git tags. Discovers which packages
-have changed since their last published version and tags them.
-
-```bash
-pcb publish                  # Publish all changed packages
-pcb publish --bump=infer     # Infer bumps from commit history and dependency waves
-pcb publish --bump=infer -y  # Skip the final publish confirmation
-pcb publish --force          # Skip preflight checks
-```
-
-A package needs publishing if:
-- No version tag exists (unpublished)
-- Content hash differs from the published tag
-- Manifest (`pcb.toml`) hash differs from the published tag
-
-Versions are computed automatically:
-- **Unpublished**: starts at `0.1.0`
-- **Published packages**: apply the requested semver bump (`patch`, `minor`, or `major`)
-- **`--bump=infer`**: infers each package bump from conventional commits since its last tag,
-  then raises dependents to at least the highest bump among published internal dependencies
-- **`-y` / `--yes`**: skips the final package publish confirmation prompt
-
-Packages with interdependencies are published in waves—packages with no dirty
-dependencies first, then their dependents after `pcb.toml` files are updated.
 
 ### pcb info
 

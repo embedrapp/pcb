@@ -26,6 +26,7 @@ Never run `cargo insta accept` without explicit user approval.
 - In `.zen` files, remember that Zener is Starlark-based, not Python: do not use f-strings.
 - Avoid editing generated artifacts, vendored code, or snapshot outputs unless the task specifically requires it.
 - The project depends on a fork of `starlark-rust` (`diodeinc/starlark-rust`); check that fork when language behavior appears to come from upstream Starlark internals rather than this repository.
+- This fork is local-first and intentionally strips Diode-hosted service flows from the default CLI. Read `FORK.md` before restoring upstream commands, dependencies, release flows, or service integrations.
 
 ## Documentation Rules
 
@@ -44,5 +45,6 @@ Never run `cargo insta accept` without explicit user approval.
 ## References
 
 - Start with `README.md` for the product-level overview.
+- Use `FORK.md` for downstream fork policy, service-removal boundaries, upstream sync workflow, and the Windows cache fix that must be preserved.
 - Use `docs/pages/spec.mdx` for language semantics.
 - Use `docs/pages/packages.mdx` for workspace, dependency, and package behavior.

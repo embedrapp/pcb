@@ -114,7 +114,7 @@ fn write_file_revision(
     let mut software = BytesStart::new("SoftwarePackage");
     software.push_attribute(("name", "pcb"));
     software.push_attribute(("revision", PCB_VERSION));
-    software.push_attribute(("vendor", "Diode"));
+    software.push_attribute(("vendor", "Local PCB"));
     writer.write_event(Event::Start(software))?;
 
     let mut cert = BytesStart::new("Certification");
@@ -162,7 +162,7 @@ mod tests {
         assert!(result.contains("fileRevisionId=\"2\""));
         assert!(result.contains("BOM alternatives added"));
         assert!(result.contains("name=\"pcb\""));
-        assert!(result.contains("vendor=\"Diode\""));
+        assert!(result.contains("vendor=\"Local PCB\""));
     }
 
     #[test]
@@ -174,10 +174,10 @@ mod tests {
       <SoftwarePackage name="KiCad" revision="9.0.5" vendor="KiCad EDA"/>
     </FileRevision>
     <FileRevision fileRevisionId="2" comment="First edit" label="">
-      <SoftwarePackage name="pcb" revision="0.2.25" vendor="Diode"/>
+      <SoftwarePackage name="pcb" revision="0.2.25" vendor="Local PCB"/>
     </FileRevision>
     <FileRevision fileRevisionId="3" comment="Second edit" label="">
-      <SoftwarePackage name="pcb" revision="0.2.26" vendor="Diode"/>
+      <SoftwarePackage name="pcb" revision="0.2.26" vendor="Local PCB"/>
     </FileRevision>
   </HistoryRecord>
 </IPC-2581>"#;

@@ -56,7 +56,7 @@ load("@stdlib/interfaces.zen", "Spi")
 
 # Remote packages (version declared in pcb.toml)
 Resistor = Module("@stdlib/generics/Resistor.zen")
-TPS54331 = Module("github.com/diodeinc/registry/reference/TPS54331/TPS54331.zen")
+TPS54331 = Module("github.com/myorg/reference/TPS54331/TPS54331.zen")
 ```
 
 The `@stdlib` alias is special and virtual—its content is controlled by the toolchain. You don't need to declare it in `[dependencies]`.
@@ -65,7 +65,7 @@ Remote package URLs don't include version information. Versions are declared sep
 
 ```toml
 [dependencies]
-"github.com/diodeinc/registry/reference/TPS54331" = "1.0"
+"github.com/myorg/reference/TPS54331" = "1.0"
 ```
 
 ### Dependency Resolution
@@ -84,8 +84,6 @@ If `[[workspace.kicad_library]]` is omitted, the toolchain defaults the workspac
 Both default entries use:
 - `symbols = "gitlab.com/kicad/libraries/kicad-symbols"`
 - `footprints = "gitlab.com/kicad/libraries/kicad-footprints"`
-- `parts = "https://kicad-mirror.api.diode.computer/kicad-parts-{version}.toml"`
-- `http_mirror = "https://kicad-mirror.api.diode.computer/{repo_name}-{version}.tar.zst"`
 
 `parts` and `http_mirror` are optional and support template placeholders:
 - `{repo}`
@@ -129,13 +127,11 @@ Use `pcb new board <name>` to add boards and `pcb new package <path>` to add mod
 [workspace]
 repository = "github.com/myorg/my-project"
 pcb-version = "0.3"
-endpoint = "diode.computer"
 members = ["boards/*", "modules/*", "components/*"]
 ```
 
-- `repository`: Git remote URL (used to derive package URLs for publishing)
+- `repository`: Git remote URL used as the workspace/package identity
 - `pcb-version`: Minimum compatible `pcb` toolchain release series (e.g., `"0.3"`). Required for workspaces.
-- `endpoint`: Optional Diode host suffix used for workspace-scoped app/API URLs. `"diode.computer"` resolves to `app.diode.computer` and `api.diode.computer`.
 - `members`: Glob patterns matching subdirectories that contain packages
 
 V1 workspaces are no longer supported. If you have an older project, run `pcb migrate` to upgrade manifests and import paths.
@@ -149,7 +145,7 @@ name = "WV0001"
 path = "MainBoard.zen"
 
 [dependencies]
-"github.com/diodeinc/registry/reference/TPS54331" = "1.0"
+"github.com/myorg/reference/TPS54331" = "1.0"
 ```
 
 - `[board]`: Defines a buildable board with `name` and entry `path`
@@ -159,7 +155,7 @@ path = "MainBoard.zen"
 
 ```toml
 [dependencies]
-"github.com/diodeinc/registry/reference/TPS54331" = "1.0"
+"github.com/myorg/reference/TPS54331" = "1.0"
 
 parts = [
   { mpn = "TPS54331DR", symbol = "TPS54331.kicad_sym", symbol_name = "TPS54331", manufacturer = "Texas Instruments", qualifications = ["Preferred"] },
@@ -423,7 +419,7 @@ Modules are reusable subcircuits — `.zen` files that declare their electrical 
 
 ```python
 PowerSupply = Module("./modules/PowerSupply.zen")
-TPS54331 = Module("github.com/diodeinc/registry/reference/TPS54331/TPS54331.zen")
+TPS54331 = Module("github.com/myorg/reference/TPS54331/TPS54331.zen")
 ```
 
 Instantiation takes a required `name` and passes remaining arguments as inputs to the module's `io()` and `config()` declarations:
