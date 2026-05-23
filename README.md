@@ -8,7 +8,7 @@ PCB schematics and provides local automations on top of KiCad to build PCBs fast
 > [!WARNING]
 > **Windows support is experimental.** Some features may be limited or unstable. For the best
 > experience, we recommend using WSL2 or macOS/Linux. If you encounter issues, please open an
-> issue in our [issue tracker](https://github.com/rshabhsinha/pcb/issues).
+> issue in our [issue tracker](https://github.com/embedrapp/pcb/issues).
 
 ## Table of Contents
 
@@ -24,13 +24,13 @@ PCB schematics and provides local automations on top of KiCad to build PCBs fast
 
 ### From Installer
 
-See the [latest release](https://github.com/rshabhsinha/pcb/releases/latest) for installation instructions.
+See the [latest release](https://github.com/embedrapp/pcb/releases/latest) for installation instructions.
 
 ### From Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/rshabhsinha/pcb.git
+git clone https://github.com/embedrapp/pcb.git
 cd pcb
 
 # Install using the provided script

@@ -3,10 +3,10 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.71-rishabh.3"
+version = "0.3.71-embedr.3"
 edition = "2024"
-repository = "https://github.com/rshabhsinha/pcb"
-homepage = "https://github.com/rshabhsinha/pcb"
+repository = "https://github.com/embedrapp/pcb"
+homepage = "https://github.com/embedrapp/pcb"
 authors = ["Rishabh Sinha"]
 
 [workspace.dependencies]

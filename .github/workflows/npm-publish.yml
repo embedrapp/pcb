@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   publish:
-    if: ${{ !contains(github.ref_name, '-rishabh.') }}
+    if: ${{ !contains(github.ref_name, '-embedr.') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -31,7 +31,7 @@ The default `pcb` binary should not include:
 
 - Treat `upstream` (`diodeinc/pcb`) as read-only.
 - Keep `main` as a clean mirror of `upstream/main`.
-- Keep downstream work on `rishabh/release` or another `rishabh/*` branch.
+- Keep downstream work on `embedr/release` or another `embedr/*` branch.
 - Do not commit personal fork changes directly to `main`.
 - Preserve unrelated dirty or untracked files, especially generated release artifacts.
 
@@ -42,7 +42,7 @@ git switch main
 git fetch upstream
 git merge --ff-only upstream/main
 
-git switch rishabh/release
+git switch embedr/release
 git rebase main
 ```
 
