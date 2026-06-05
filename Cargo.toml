@@ -3,10 +3,10 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.90"
+version = "0.3.90-embedr.1"
 edition = "2024"
-repository = "https://github.com/diodeinc/pcb"
-homepage = "https://github.com/diodeinc/pcb"
+repository = "https://github.com/embedrapp/pcb"
+homepage = "https://github.com/embedrapp/pcb"
 authors = ["Diode Computers, Inc. <founders@diode.computer>"]
 
 [workspace.dependencies]
@@ -44,7 +44,6 @@ pcb-starlark-lsp = { path = "crates/pcb-starlark-lsp" }
 pcb-fmt = { path = "crates/pcb-fmt" }
 pcb-test-utils = { path = "crates/pcb-test-utils" }
 pcb-sim = { path = "crates/pcb-sim" }
-pcb-diode-api = { path = "crates/pcb-diode-api" }
 pcb-ipc2581-tools = { path = "crates/pcb-ipc2581-tools" }
 pcb-docgen = { path = "crates/pcb-docgen" }
 
@@ -79,6 +78,7 @@ regex = "1.11.0"
 natord = "1.0.9"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+junction = "1.4.2"
 tempfile = "3.10.1"
 thiserror = "2"
 toml = "1"

@@ -26,9 +26,9 @@ Never run `cargo insta accept` without explicit user approval.
 - `crates/pcb-kicad/src/` wraps KiCad tooling and KiCad-specific checks; `crates/pcb-sexpr/src/` handles low-level S-expression parsing/rewriting for KiCad files.
 - `crates/pcbc/src/import/` implements `pcb import`; start with `crates/pcbc/src/import/README.md` and `flow.rs` before changing the import pipeline.
 - `crates/pcb-eda/` and `crates/pcb-component-gen/` handle external EDA artifacts and generated Zener component modules.
-- `crates/pcb-diode-api/` contains API/auth/search/BOM-matching client logic.
 - `lib/std/` contains the Zener standard library; `examples/` and `test-workspaces/` are useful runnable designs.
 - Use `docs/pages/packages.mdx` for workspace, dependency, and package behavior.
+- This fork is local-first and intentionally strips Diode-hosted service flows from the shipped `pcb` CLI. Read `FORK.md` before restoring upstream commands, dependencies, release flows, or service integrations.
 
 ## Working Rules
 

@@ -8,10 +8,9 @@ Exit Code: 0
 --- STDOUT ---
 PCB tool with build and layout capabilities
 
-Usage: pcbc <COMMAND>
+Usage: pcb <COMMAND>
 
 Commands:
-  auth        Manage authentication
   build       Build PCB projects
   test        Run tests in .zen files
   migrate     Migrate PCB projects
@@ -21,20 +20,15 @@ Commands:
   list        List package dependency information
   new         Create a new board, package, or component
   update      Update dependencies to latest compatible versions
-  bom         Generate Bill of Materials (BOM)
   info        Display workspace and board information
   import      Import KiCad projects into a Zener board repository
   doc         Generate package documentation
   layout      Layout PCB designs
   fmt         Format .zen files
   open        Open PCB layout files
-  publish     Publish packages and boards by creating version tags
-  preview     Build and upload a preview release for a board
   vendor      Vendor external dependencies
   fork        Reserved subcommand for future use
   embed-step  Embed a STEP model into a KiCad footprint
-  scan        Scan datasheets from local PDFs or URLs
-  search      Search for electronic components
   simulate    Run SPICE simulations
   ipc2581     IPC-2581 parser and inspection tool
   gerber      Gerber X2 parser and rendering tool

@@ -26,7 +26,6 @@ pcb-canonical = { workspace = true }
 pcb-sch = { workspace = true, features = ["table"] }
 pcb-layout = { workspace = true }
 pcb-sim = { workspace = true }
-pcb-diode-api = { workspace = true }
 pcb-docgen = { workspace = true }
 pcb-ipc2581-tools = { workspace = true }
 pcb-eda = { workspace = true }
