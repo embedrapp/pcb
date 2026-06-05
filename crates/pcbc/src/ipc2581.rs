@@ -33,17 +33,6 @@ enum Commands {
         #[arg(long, default_value = "board-array")]
         scope: LayoutTarget,
     },
-    /// Generate Bill of Materials (BOM)
-    Bom {
-        /// IPC-2581 XML file to inspect
-        #[arg(value_hint = clap::ValueHint::FilePath)]
-        file: PathBuf,
-        #[arg(short, long, default_value = "text")]
-        format: OutputFormat,
-        /// Run in offline mode without fetching part availability
-        #[arg(long)]
-        offline: bool,
-    },
     /// Generate the test-fixture interposer board for a board-array panel
     Interposer {
         /// Board-array IPC-2581 XML file (`board-array create` output)
@@ -353,7 +342,6 @@ impl FabPanelSize {
         }
     }
 }
-
 pub fn execute(args: Ipc2581Args, resolution: Resolution) -> anyhow::Result<()> {
     utils::color::init_color();
 
@@ -374,11 +362,6 @@ pub fn execute(args: Ipc2581Args, resolution: Resolution) -> anyhow::Result<()> 
             })?;
             Ok(())
         }
-        Commands::Bom {
-            file,
-            format,
-            offline,
-        } => commands::bom::execute(&file, format, offline),
         Commands::Interposer {
             input,
             output,
