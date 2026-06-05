@@ -19,3 +19,7 @@ Keep checks scoped to the change. Report changed snapshots; do not accept them w
 
 - Add one succinct `CHANGELOG.md` entry under `Unreleased` per user-visible change.
 - Update `docs/pages/spec.mdx` for language changes and `docs/pages/packages.mdx` for workspace/dependency/package changes.
+
+This fork is local-first and intentionally strips Diode-hosted service flows from the shipped
+`pcb` CLI. Read `FORK.md` before restoring upstream commands, dependencies, release flows, or
+service integrations.

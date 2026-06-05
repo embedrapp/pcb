@@ -32,7 +32,7 @@ pcb-canonical = { workspace = true }
 pcb-sch = { workspace = true, features = ["table"] }
 pcb-layout = { workspace = true }
 pcb-sim = { workspace = true }
-pcb-diode-api = { workspace = true }
+pcb-docgen = { workspace = true }
 pcb-ipc2581-tools = { workspace = true, features = ["cli"] }
 pcb-interposer = { path = "../pcb-interposer" }
 pcb-eda = { workspace = true }
@@ -44,7 +44,6 @@ dirs = { workspace = true }
 env_logger = { workspace = true }
 colored = { workspace = true }
 pcb-kicad = { workspace = true }
-pcb-native-dialog = { workspace = true }
 pcb-command-runner = { workspace = true }
 pcb-kicad-sch = { workspace = true }
 open = { workspace = true }

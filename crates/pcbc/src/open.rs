@@ -18,7 +18,7 @@ const DFM_BRIDGE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Args, Debug)]
 pub struct OpenArgs {
-    /// Path to .zen/.kicad_pcb/.dfm.json file or diode:// sandbox URI
+    /// Path to .zen/.kicad_pcb/.dfm.json file
     #[arg(value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
     pub file: PathBuf,
 
@@ -28,16 +28,11 @@ pub struct OpenArgs {
 }
 
 pub fn execute(args: OpenArgs) -> Result<()> {
-    if let Some(uri) = crate::sandbox_uri::parse_sandbox_file_arg(&args.file)? {
-        crate::sandbox_uri::require_remote_openable_file(&uri)?;
-        return crate::remote_sandbox::execute_open(uri, args);
-    }
-
     if is_dfm_report_path(&args.file) {
         return open_dfm_report(&args.file);
     }
 
-    if crate::sandbox_uri::is_kicad_pcb_path(&args.file) {
+    if is_kicad_pcb_path(&args.file) {
         return open_pcb_file(&args.file);
     }
 
@@ -169,6 +164,12 @@ impl DfmBridge {
         )?;
         Ok(())
     }
+}
+
+fn is_kicad_pcb_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("kicad_pcb"))
 }
 
 fn open_pcb_file(path: &Path) -> Result<()> {
