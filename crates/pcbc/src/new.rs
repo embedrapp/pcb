@@ -33,7 +33,7 @@ fn create_template_env() -> Environment<'static> {
         Examples:\n  \
         pcb new board MainBoard https://github.com/user/MainBoard\n  \
         pcb new package modules/power_supply\n  \
-        pcb new component path/to/component-dir"
+        pcb new component"
 )]
 pub struct NewArgs {
     #[command(subcommand)]
@@ -48,7 +48,7 @@ pub enum NewCommand {
     /// Create a new package at the given path (requires existing workspace)
     Package(NewPackageArgs),
 
-    /// Import a component from a local directory
+    /// Component creation is unavailable in the local Embedr fork
     Component(NewComponentArgs),
 }
 
@@ -70,11 +70,23 @@ pub struct NewPackageArgs {
     pub path: String,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Default)]
 pub struct NewComponentArgs {
-    /// Local component directory to import
-    #[arg(value_name = "DIR")]
-    pub dir: PathBuf,
+    /// Local component directory to import (unavailable in this fork)
+    #[arg(value_name = "DIR", conflicts_with = "component_id")]
+    pub dir: Option<PathBuf>,
+
+    /// Download and add a searched component (unavailable in this fork)
+    #[arg(long, value_name = "ID")]
+    pub component_id: Option<String>,
+
+    /// Deprecated: fallback MPN for --component-id
+    #[arg(long, value_name = "MPN", requires = "component_id")]
+    pub part_number: Option<String>,
+
+    /// Deprecated: manufacturer override for --component-id
+    #[arg(long, value_name = "MFR", requires = "component_id")]
+    pub manufacturer: Option<String>,
 }
 
 /// Validate a name for use as a directory/git repo name.
@@ -233,7 +245,11 @@ fn require_workspace() -> Result<(std::path::PathBuf, PcbToml)> {
 }
 
 fn execute_new_component(args: NewComponentArgs) -> Result<()> {
-    pcb_diode_api::execute_component_from_local_dir(&args.dir)
+    if args.dir.is_some() || args.component_id.is_some() {
+        bail!("`pcb new component` is unavailable in the local Embedr pcb fork.");
+    }
+
+    bail!("`pcb new component` is unavailable in the local Embedr pcb fork.")
 }
 
 fn execute_interactive() -> Result<()> {
@@ -246,7 +262,7 @@ fn execute_interactive() -> Result<()> {
 
         match selection {
             "package" => prompt_new_package(),
-            "component" => prompt_new_component(),
+            "component" => execute_new_component(NewComponentArgs::default()),
             _ => unreachable!(),
         }
     } else {
@@ -272,16 +288,6 @@ fn prompt_new_package() -> Result<()> {
         .context("Failed to get package path")?;
 
     execute_new_package(&path)
-}
-
-fn prompt_new_component() -> Result<()> {
-    let dir = Text::new("Local component directory:")
-        .prompt()
-        .context("Failed to get component directory")?;
-
-    execute_new_component(NewComponentArgs {
-        dir: PathBuf::from(dir),
-    })
 }
 
 fn execute_new_board(board: &str, repo: &str) -> Result<()> {
