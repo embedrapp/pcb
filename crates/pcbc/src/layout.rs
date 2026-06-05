@@ -13,7 +13,7 @@ use crate::drc;
 #[derive(Args, Debug, Default, Clone)]
 #[command(about = "Generate PCB layout files from a .zen file")]
 pub struct LayoutArgs {
-    /// Path to .zen file or diode:// sandbox URI
+    /// Path to .zen file
     #[arg(value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
     pub file: PathBuf,
 
@@ -110,10 +110,7 @@ pub(crate) struct PreparedDesign {
 }
 
 pub fn execute(mut args: LayoutArgs) -> Result<()> {
-    if let Some(uri) = crate::sandbox_uri::parse_sandbox_file_arg(&args.file)? {
-        crate::sandbox_uri::require_remote_zen_file(&uri)?;
-        return crate::remote_sandbox::execute_layout(uri, args);
-    }
+    crate::file_walker::require_zen_file(&args.file)?;
 
     // --check implies --no-open
     if args.check {
