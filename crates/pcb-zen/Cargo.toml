@@ -59,6 +59,9 @@ termtree = { workspace = true }
 [lib]
 path = "src/lib.rs"
 
+[target.'cfg(windows)'.dependencies]
+junction = { workspace = true }
+
 [dev-dependencies]
 insta = { workspace = true }
 serial_test = { workspace = true }

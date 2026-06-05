@@ -17,7 +17,7 @@ pub enum CollectZenFilesError {
 }
 
 /// Validate that a path is a .zen file (not a directory or other file type).
-/// Used by file-level commands (bom, sim, layout, open, release).
+/// Used by file-level commands (build, sim, layout, open).
 pub fn require_zen_file(path: &Path) -> Result<()> {
     if !path.exists() {
         bail!("File not found: {}", path.display());
