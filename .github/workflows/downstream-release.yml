@@ -1,0 +1,115 @@
+name: Downstream Release
+
+on:
+  push:
+    tags:
+      - "embedr-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build-${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-22.04
+          - name: macos-universal
+            os: macos-15-intel
+          - name: windows-x64
+            os: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Linux
+        if: matrix.name == 'linux-x64'
+        run: cargo build --release -p pcbc
+
+      - name: Build macOS universal
+        if: matrix.name == 'macos-universal'
+        run: |
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          cargo build --release -p pcbc --target x86_64-apple-darwin
+          cargo build --release -p pcbc --target aarch64-apple-darwin
+          mkdir -p target/release
+          lipo -create \
+            target/x86_64-apple-darwin/release/pcbc \
+            target/aarch64-apple-darwin/release/pcbc \
+            -output target/release/pcb
+
+      - name: Build Windows
+        if: matrix.name == 'windows-x64'
+        run: cargo build --release -p pcbc
+
+      - name: Stage Linux artifact
+        if: matrix.name == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p package dist
+          cp target/release/pcbc package/pcb
+          chmod +x package/pcb
+          tar -C package -cJf dist/pcb-x86_64-unknown-linux-gnu.tar.xz pcb
+          sha256sum dist/pcb-x86_64-unknown-linux-gnu.tar.xz > dist/pcb-x86_64-unknown-linux-gnu.tar.xz.sha256
+
+      - name: Stage macOS artifact
+        if: matrix.name == 'macos-universal'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p package dist
+          cp target/release/pcb package/pcb
+          chmod +x package/pcb
+          (cd package && zip -q ../dist/pcb-macos-universal.zip pcb)
+          shasum -a 256 dist/pcb-macos-universal.zip > dist/pcb-macos-universal.zip.sha256
+
+      - name: Stage Windows artifact
+        if: matrix.name == 'windows-x64'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package, dist | Out-Null
+          Copy-Item target/release/pcbc.exe package/pcb.exe
+          Compress-Archive -LiteralPath package/pcb.exe -DestinationPath dist/pcb-x86_64-pc-windows-msvc.zip -Force
+          $hash = Get-FileHash dist/pcb-x86_64-pc-windows-msvc.zip -Algorithm SHA256
+          "$($hash.Hash.ToLowerInvariant())  pcb-x86_64-pc-windows-msvc.zip" | Set-Content dist/pcb-x86_64-pc-windows-msvc.zip.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pcb-${{ matrix.name }}
+          path: dist/*
+
+  publish:
+    name: publish-release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/embedr-v')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          gh release create "$TAG" artifacts/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "pcb ${TAG#embedr-v}" \
+            --notes "Downstream pcb CLI build from embedrapp/pcb, including fork-specific fixes."
