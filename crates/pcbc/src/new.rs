@@ -33,8 +33,7 @@ fn create_template_env() -> Environment<'static> {
         Examples:\n  \
         pcb new board MainBoard https://github.com/user/MainBoard\n  \
         pcb new package modules/power_supply\n  \
-        pcb new component\n  \
-        pcb new component path/to/component-dir"
+        pcb new component"
 )]
 pub struct NewArgs {
     #[command(subcommand)]
@@ -49,7 +48,7 @@ pub enum NewCommand {
     /// Create a new package at the given path (requires existing workspace)
     Package(NewPackageArgs),
 
-    /// Import a local component; no-DIR online search and --component-id are deprecated
+    /// Component creation is unavailable in the local Embedr fork
     Component(NewComponentArgs),
 }
 
@@ -73,11 +72,11 @@ pub struct NewPackageArgs {
 
 #[derive(Args, Debug, Default)]
 pub struct NewComponentArgs {
-    /// Local component directory to import
+    /// Local component directory to import (unavailable in this fork)
     #[arg(value_name = "DIR", conflicts_with = "component_id")]
     pub dir: Option<PathBuf>,
 
-    /// Deprecated: use `pcb component download`
+    /// Download and add a searched component (unavailable in this fork)
     #[arg(long, value_name = "ID")]
     pub component_id: Option<String>,
 
@@ -246,20 +245,11 @@ fn require_workspace() -> Result<(std::path::PathBuf, PcbToml)> {
 }
 
 fn execute_new_component(args: NewComponentArgs) -> Result<()> {
-    if let Some(dir) = args.dir.as_deref() {
-        return pcb_diode_api::execute_component_from_local_dir(dir);
+    if args.dir.is_some() || args.component_id.is_some() {
+        bail!("`pcb new component` is unavailable in the local Embedr pcb fork.");
     }
 
-    if let Some(component_id) = args.component_id.as_deref() {
-        return pcb_diode_api::execute_component_from_id(
-            component_id,
-            args.part_number.as_deref(),
-            args.manufacturer.as_deref(),
-        );
-    }
-
-    let (workspace_root, _) = require_workspace()?;
-    pcb_diode_api::execute_web_components_tui(&workspace_root)
+    bail!("`pcb new component` is unavailable in the local Embedr pcb fork.")
 }
 
 fn execute_interactive() -> Result<()> {

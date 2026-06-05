@@ -10,10 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const BUNDLED_EXTERNAL_COMMANDS: &[&str] = &["rectify"];
-
-mod bom;
 mod build;
-mod bundle;
 mod changelog;
 mod codegen;
 mod config_input;
@@ -36,12 +33,6 @@ mod new;
 mod open;
 #[path = "mod/mod.rs"]
 mod pcb_mod;
-mod preview;
-mod publish;
-mod release;
-mod remote_sandbox;
-mod route;
-mod sandbox_uri;
 mod sim;
 mod test;
 mod update;
@@ -49,10 +40,14 @@ mod vendor;
 
 mod profiling;
 mod resolve;
-mod tty;
 
 #[derive(Parser)]
-#[command(about = "PCB tool with build and layout capabilities", long_about = None)]
+#[command(
+    name = "pcb",
+    bin_name = "pcb",
+    about = "PCB tool with build and layout capabilities",
+    long_about = None
+)]
 #[command(version)]
 struct Cli {
     /// Enable debug logging
@@ -70,9 +65,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Manage authentication
-    Auth(pcb_diode_api::AuthArgs),
-
     /// Build PCB projects
     #[command(alias = "b")]
     Build(build::BuildArgs),
@@ -103,9 +95,6 @@ enum Commands {
     /// Update dependencies to latest compatible versions
     Update(update::UpdateArgs),
 
-    /// Generate Bill of Materials (BOM)
-    Bom(bom::BomArgs),
-
     /// Display workspace and board information
     Info(info::InfoArgs),
 
@@ -134,13 +123,6 @@ enum Commands {
     #[command(alias = "o")]
     Open(open::OpenArgs),
 
-    /// Publish packages and boards by creating version tags
-    #[command(alias = "p")]
-    Publish(publish::PublishArgs),
-
-    /// Build and upload a preview release for a board
-    Preview(preview::PreviewArgs),
-
     /// Vendor external dependencies
     Vendor(vendor::VendorArgs),
 
@@ -149,19 +131,6 @@ enum Commands {
 
     /// Embed a STEP model into a KiCad footprint
     EmbedStep(embed_step::EmbedStepArgs),
-
-    /// Scan datasheets from local PDFs or URLs
-    Scan(pcb_diode_api::ScanArgs),
-
-    /// Access the component API
-    Component(pcb_diode_api::ComponentArgs),
-
-    /// Search for electronic components
-    Search(pcb_diode_api::SearchArgs),
-
-    /// Auto-route PCB using DeepPCB cloud service
-    #[command(hide = true)]
-    Route(route::RouteArgs),
 
     /// Run SPICE simulations
     #[command(alias = "sim", alias = "s")]
@@ -213,10 +182,6 @@ fn run() -> anyhow::Result<()> {
     let _profile_guard = profiling::init(cli.profile);
 
     match cli.command {
-        Commands::Auth(args) => {
-            let ctx = pcb_diode_api::WorkspaceContext::from_cwd()?;
-            pcb_diode_api::execute_auth(args, &ctx)
-        }
         Commands::Build(args) => build::execute(args),
         Commands::Test(args) => test::execute(args),
         Commands::Migrate(args) => migrate::execute(args),
@@ -226,7 +191,6 @@ fn run() -> anyhow::Result<()> {
         Commands::List(args) => list::execute(args),
         Commands::New(args) => new::execute(args),
         Commands::Update(args) => update::execute(args),
-        Commands::Bom(args) => bom::execute(args),
         Commands::Info(args) => info::execute(args),
         Commands::Import(args) => import::execute(args),
         Commands::Doc(args) => doc::execute(args),
@@ -235,18 +199,12 @@ fn run() -> anyhow::Result<()> {
         Commands::Fmt(args) => fmt::execute(args),
         Commands::Lsp(args) => lsp::execute(args),
         Commands::Open(args) => open::execute(args),
-        Commands::Publish(args) => publish::execute(args),
-        Commands::Preview(args) => preview::execute(args),
         Commands::Vendor(args) => vendor::execute(args),
         Commands::Fork => {
             println!("`pcb fork` is a reserved subcommand for future use.");
             Ok(())
         }
-        Commands::Scan(args) => pcb_diode_api::execute_scan(args),
-        Commands::Component(args) => pcb_diode_api::execute_component(args),
-        Commands::Search(args) => pcb_diode_api::execute_search(args),
         Commands::EmbedStep(args) => embed_step::execute(args),
-        Commands::Route(args) => route::execute(args),
         Commands::Simulate(args) => sim::execute(args),
         Commands::Ipc2581(args) => ipc2581::execute(args),
         Commands::Gerber(args) => gerber::execute(args),

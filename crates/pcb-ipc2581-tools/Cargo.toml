@@ -26,6 +26,5 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 uppsala = { workspace = true }
 zstd = { workspace = true }
-pcb-diode-api = { workspace = true }
 pcb-ui = { workspace = true }
 zip = { workspace = true }

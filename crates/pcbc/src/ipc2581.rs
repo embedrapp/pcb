@@ -23,17 +23,6 @@ enum Commands {
         #[arg(short, long, default_value = "mm")]
         units: UnitFormat,
     },
-    /// Generate Bill of Materials (BOM)
-    Bom {
-        /// IPC-2581 XML file to inspect
-        #[arg(value_hint = clap::ValueHint::FilePath)]
-        file: PathBuf,
-        #[arg(short, long, default_value = "text")]
-        format: OutputFormat,
-        /// Run in offline mode without fetching part availability
-        #[arg(long)]
-        offline: bool,
-    },
     /// Generate component placement data (CPL)
     Cpl {
         /// IPC-2581 XML file to export from
@@ -303,7 +292,6 @@ impl FabPanelSize {
         }
     }
 }
-
 pub fn execute(args: Ipc2581Args) -> anyhow::Result<()> {
     utils::color::init_color();
 
@@ -313,11 +301,6 @@ pub fn execute(args: Ipc2581Args) -> anyhow::Result<()> {
             format,
             units,
         } => commands::info::execute(&file, format, units),
-        Commands::Bom {
-            file,
-            format,
-            offline,
-        } => commands::bom::execute(&file, format, offline),
         Commands::Cpl {
             file,
             output,
