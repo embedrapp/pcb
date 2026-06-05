@@ -13,7 +13,6 @@ cli = [
     "dep:clap",
     "dep:colored",
     "dep:comfy-table",
-    "dep:pcb-diode-api",
     "dep:pcb-sch",
     "dep:pcb-ui",
     "dep:pdf-writer",
@@ -53,7 +52,6 @@ toml = { workspace = true }
 ttf-parser = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["serde"], optional = true }
 zstd = { workspace = true, optional = true }
-pcb-diode-api = { workspace = true, optional = true }
 pcb-ui = { workspace = true, optional = true }
 zip = { workspace = true }
 

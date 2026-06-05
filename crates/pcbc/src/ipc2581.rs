@@ -49,17 +49,6 @@ enum Commands {
         #[command(flatten)]
         population: PopulationArgs,
     },
-    /// Generate Bill of Materials (BOM)
-    Bom {
-        /// IPC-2581 XML file to inspect
-        #[arg(value_hint = clap::ValueHint::FilePath)]
-        file: PathBuf,
-        #[arg(short, long, default_value = "text")]
-        format: commands::bom::BomFormat,
-        /// Run in offline mode without fetching part availability
-        #[arg(long)]
-        offline: bool,
-    },
     /// Generate the test-fixture interposer board for a board-array panel
     Interposer {
         /// Board-array IPC-2581 XML file (`board-array create` output)
@@ -435,7 +424,6 @@ struct PopulationArgs {
     #[arg(long, value_delimiter = ',', value_name = "REFDES")]
     populate: Vec<String>,
 }
-
 pub fn execute(args: Ipc2581Args, resolution: Resolution) -> anyhow::Result<()> {
     utils::color::init_color();
 
@@ -486,11 +474,6 @@ pub fn execute(args: Ipc2581Args, resolution: Resolution) -> anyhow::Result<()> 
             })?;
             Ok(())
         }
-        Commands::Bom {
-            file,
-            format,
-            offline,
-        } => commands::bom::execute(&file, format, offline),
         Commands::Interposer {
             input,
             output,
