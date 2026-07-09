@@ -78,6 +78,20 @@ h3 {
     gap: 6px;
 }
 
+.array-overview {
+    border: 1px solid #d0d0d0;
+    background: #fdfdfd;
+    padding: 8px;
+    margin-bottom: 24px;
+}
+
+.array-overview svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 760px;
+}
+
 .color-swatch {
     display: inline-block;
     width: 16px;

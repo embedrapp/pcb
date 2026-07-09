@@ -24,6 +24,46 @@ fn redundancy_advice_count(diagnostics: &pcb_zen_core::Diagnostics, body_substri
 
 #[test]
 #[cfg(not(target_os = "windows"))]
+fn io_interface_template_preserves_borrowed_net_name() {
+    let result = eval_ok(
+        r#"
+load("@stdlib/interfaces.zen", "Ground", "I2c")
+
+GND = io(Ground())
+I2C_TARGET = io(I2c(SDA=GND, SCL=GND), optional=True)
+
+Component(
+    name = "U1",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod"),
+    pin_defs = {"P1": "1", "P2": "2"},
+    pins = {"P1": I2C_TARGET.SDA, "P2": GND},
+    skip_bom = True,
+)
+"#,
+    );
+
+    let eval_output = result.output.expect("expected eval output");
+    let sch_result = eval_output.to_schematic_with_diagnostics();
+    assert!(
+        !sch_result.diagnostics.has_errors(),
+        "schematic conversion failed: {:?}",
+        sch_result.diagnostics
+    );
+
+    let schematic = sch_result.output.expect("expected schematic");
+    let mut ground_like_nets = schematic
+        .nets
+        .keys()
+        .filter(|name| name.as_str() == "GND" || name.ends_with(".GND"))
+        .cloned()
+        .collect::<Vec<_>>();
+    ground_like_nets.sort();
+
+    assert_eq!(ground_like_nets, vec!["GND".to_string()]);
+}
+
+#[test]
+#[cfg(not(target_os = "windows"))]
 fn infers_direct_net_names_from_assignment() {
     let result = eval_ok(
         r#"
@@ -44,6 +84,32 @@ check(VDD.original_name == "VDD", "inferred typed net name should be canonical")
         warnings.is_empty(),
         "did not expect warnings for inferred direct net names, got: {:?}",
         warnings
+    );
+}
+
+#[test]
+#[cfg(not(target_os = "windows"))]
+fn unassigned_regular_net_errors() {
+    let result = common::eval_zen(vec![(
+        "test.zen".to_string(),
+        r#"Component(
+    name = "U1",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod"),
+    pin_defs = {"P1": "1"},
+    pins = {"P1": Net()},
+    skip_bom = True,
+)"#
+        .to_string(),
+    )]);
+
+    assert!(result.output.is_none(), "expected eval failure");
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diag| diag.body == "Net is unnamed"),
+        "expected unnamed net error, got: {:?}",
+        result.diagnostics
     );
 }
 
@@ -83,37 +149,26 @@ check(AUTO.data.name == "AUTO_data", "generated sibling child should adopt assig
 
 #[test]
 #[cfg(not(target_os = "windows"))]
-fn deduplicates_assignment_inferred_names_on_collision() {
-    let result = eval_ok(
+fn rejects_assignment_inferred_name_collisions() {
+    let result = common::eval_zen(vec![(
+        "test.zen".to_string(),
         r#"
 Power = builtin.net_type("Power")
 
 existing = Net("AUTO")
-typed_existing = Power("VDD")
 AUTO = Net()
-VDD = Power()
+"#
+        .to_string(),
+    )]);
 
-check(AUTO.name == "AUTO_2", "inferred Net() name should deduplicate against explicit names")
-check(AUTO.original_name == "AUTO", "deduplicated inferred Net() should preserve requested name")
-check(VDD.name == "VDD_2", "inferred typed net name should deduplicate against explicit names")
-check(VDD.original_name == "VDD", "deduplicated inferred typed net should preserve requested name")
-"#,
-    );
-
-    let warnings = result.diagnostics.warnings();
+    assert!(result.output.is_none(), "expected eval failure");
     assert!(
-        warnings
+        result
+            .diagnostics
             .iter()
-            .any(|warning| warning.body.contains("Net 'AUTO' was renamed to 'AUTO_2'")),
-        "expected collision warning for inferred Net() name, got: {:?}",
-        warnings
-    );
-    assert!(
-        warnings
-            .iter()
-            .any(|warning| warning.body.contains("Net 'VDD' was renamed to 'VDD_2'")),
-        "expected collision warning for inferred typed net name, got: {:?}",
-        warnings
+            .any(|diag| diag.body.contains("Duplicate net name: AUTO")),
+        "expected duplicate net name error, got: {:?}",
+        result.diagnostics
     );
 }
 

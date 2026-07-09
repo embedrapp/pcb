@@ -17,10 +17,12 @@ gerberx2 = { workspace = true }
 jiff = { workspace = true }
 log = { workspace = true }
 minijinja = { workspace = true }
+natord = { workspace = true }
 pcb-ir = { workspace = true }
 pcb-sch = { workspace = true, features = ["table"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-quick-xml = { workspace = true }
+uppsala = { workspace = true }
 zstd = { workspace = true }
 pcb-ui = { workspace = true }
+zip = { workspace = true }

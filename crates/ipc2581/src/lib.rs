@@ -1,12 +1,14 @@
 // Pure IPC-2581 parser modules
 mod checksum;
-mod intern;
+pub mod edit;
 mod parse;
 pub mod types;
 pub mod units;
+pub mod write;
 
-pub use intern::{Interner, Symbol};
+pub use pcb_intern::{Interner, Symbol};
 pub use types::*;
+pub use uppsala::XmlWriter;
 
 use checksum::validate_checksum;
 use parse::Parser;
@@ -290,6 +292,167 @@ mod tests {
     }
 
     #[test]
+    fn parses_all_ipc_line_properties() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<IPC-2581 revision="C" xmlns="http://webstds.ipc.org/2581">
+  <Content roleRef="Owner">
+    <FunctionMode mode="FABRICATION"/>
+    <DictionaryLineDesc units="MILLIMETER">
+      <EntryLineDesc id="solid"><LineDesc lineWidth="0.1" lineEnd="ROUND" lineProperty="SOLID"/></EntryLineDesc>
+      <EntryLineDesc id="dotted"><LineDesc lineWidth="0.1" lineEnd="ROUND" lineProperty="DOTTED"/></EntryLineDesc>
+      <EntryLineDesc id="dashed"><LineDesc lineWidth="0.1" lineEnd="ROUND" lineProperty="DASHED"/></EntryLineDesc>
+      <EntryLineDesc id="center"><LineDesc lineWidth="0.1" lineEnd="ROUND" lineProperty="CENTER"/></EntryLineDesc>
+      <EntryLineDesc id="phantom"><LineDesc lineWidth="0.1" lineEnd="ROUND" lineProperty="PHANTOM"/></EntryLineDesc>
+      <EntryLineDesc id="erase"><LineDesc lineWidth="0.1" lineEnd="ROUND" lineProperty="ERASE"/></EntryLineDesc>
+    </DictionaryLineDesc>
+    <DictionaryColor/>
+    <DictionaryFillDesc units="MILLIMETER"/>
+    <DictionaryStandard units="MILLIMETER"/>
+    <DictionaryUser units="MILLIMETER"/>
+  </Content>
+</IPC-2581>"#;
+
+        let doc = Ipc2581::parse(xml).unwrap();
+        let properties = doc
+            .content()
+            .dictionary_line_desc
+            .entries
+            .iter()
+            .map(|entry| entry.line_desc.line_property)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            properties,
+            vec![
+                Some(types::primitives::LineProperty::Solid),
+                Some(types::primitives::LineProperty::Dotted),
+                Some(types::primitives::LineProperty::Dashed),
+                Some(types::primitives::LineProperty::Center),
+                Some(types::primitives::LineProperty::Phantom),
+                Some(types::primitives::LineProperty::Erase),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_profile_cutouts_as_direct_polygon_contours() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<IPC-2581 revision="C" xmlns="http://webstds.ipc.org/2581">
+  <Content roleRef="Owner">
+    <FunctionMode mode="FABRICATION"/>
+    <StepRef name="board"/>
+  </Content>
+  <Ecad>
+    <CadHeader units="MILLIMETER"/>
+    <CadData>
+      <Step name="board" type="BOARD">
+        <Profile>
+          <Polygon>
+            <PolyBegin x="0" y="0"/>
+            <PolyStepSegment x="20" y="0"/>
+            <PolyStepSegment x="20" y="10"/>
+            <PolyStepSegment x="0" y="10"/>
+            <PolyStepSegment x="0" y="0"/>
+          </Polygon>
+          <Cutout>
+            <PolyBegin x="2" y="3"/>
+            <PolyStepSegment x="4" y="3"/>
+            <PolyStepSegment x="4" y="5"/>
+            <PolyStepSegment x="2" y="5"/>
+            <PolyStepSegment x="2" y="3"/>
+          </Cutout>
+          <Cutout>
+            <Polygon>
+              <PolyBegin x="8" y="3"/>
+              <PolyStepSegment x="10" y="3"/>
+              <PolyStepSegment x="10" y="5"/>
+              <PolyStepSegment x="8" y="5"/>
+              <PolyStepSegment x="8" y="3"/>
+            </Polygon>
+          </Cutout>
+        </Profile>
+      </Step>
+    </CadData>
+  </Ecad>
+</IPC-2581>"#;
+
+        let doc = Ipc2581::parse(xml).expect("parse IPC-2581");
+        let profile = doc.ecad().unwrap().cad_data.steps[0]
+            .profile
+            .as_ref()
+            .unwrap();
+
+        assert_eq!(profile.cutouts.len(), 2);
+        assert_eq!(profile.cutouts[0].begin, Point { x: 2.0, y: 3.0 });
+        assert_eq!(profile.cutouts[1].begin, Point { x: 8.0, y: 3.0 });
+    }
+
+    #[test]
+    fn preserves_vcut_specs_spec_refs_and_fiducials() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<IPC-2581 revision="C" xmlns="http://webstds.ipc.org/2581">
+  <Content roleRef="Owner">
+    <FunctionMode mode="FABRICATION"/>
+  </Content>
+  <Ecad>
+    <CadHeader units="MILLIMETER">
+      <Spec name="VCut_1">
+        <V_Cut type="ANGLE">
+          <Property value="90" unit="DEGREES" plusTol="5" minusTol="5" tolPercent="true"/>
+        </V_Cut>
+        <V_Cut type="THICKNESS_REMAINING">
+          <Property value="0.5" unit="MM" plusTol="0.1" minusTol="0.1"/>
+        </V_Cut>
+      </Spec>
+    </CadHeader>
+    <CadData>
+      <Layer name="TOP" layerFunction="SIGNAL">
+        <SpecRef id="VCut_1"/>
+      </Layer>
+      <Step name="Panel" type="PALLET">
+        <LayerFeature layerRef="TOP">
+          <Set>
+            <SpecRef id="VCut_1"/>
+            <GlobalFiducial>
+              <Location x="1" y="2"/>
+              <Circle diameter="1"/>
+            </GlobalFiducial>
+          </Set>
+        </LayerFeature>
+      </Step>
+    </CadData>
+  </Ecad>
+</IPC-2581>"#;
+
+        let doc = Ipc2581::parse(xml).expect("parse IPC-2581");
+        let ecad = doc.ecad().unwrap();
+        let spec = ecad
+            .cad_header
+            .specs
+            .get(&doc.interner().get("VCut_1").unwrap())
+            .unwrap();
+        assert_eq!(spec.items.len(), 2);
+        assert_eq!(spec.items[0].kind, ecad::SpecItemKind::VCut);
+        assert_eq!(doc.resolve(spec.items[0].item_type.unwrap()), "ANGLE");
+        assert_eq!(spec.items[0].properties[0].value, Some(90.0));
+        assert_eq!(spec.items[0].properties[0].tol_percent, Some(true));
+
+        let layer = &ecad.cad_data.layers[0];
+        assert_eq!(doc.resolve(layer.spec_refs[0]), "VCut_1");
+
+        let set = &ecad.cad_data.steps[0].layer_features[0].sets[0];
+        assert_eq!(doc.resolve(set.spec_refs[0]), "VCut_1");
+        assert_eq!(set.fiducials().count(), 1);
+        assert!(matches!(
+            set.features[0],
+            ecad::SetFeature::Fiducial(ecad::Fiducial {
+                kind: ecad::FiducialKind::Global,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn preserves_set_feature_source_order() {
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <IPC-2581 revision="C" xmlns="http://webstds.ipc.org/2581">
@@ -339,13 +502,56 @@ mod tests {
         assert_eq!(set.features.len(), 4);
         assert!(matches!(set.features[0], ecad::SetFeature::Trace(_)));
         assert!(matches!(set.features[1], ecad::SetFeature::Polygon(_)));
-        assert!(matches!(set.features[2], ecad::SetFeature::Line(_)));
+        assert!(matches!(
+            set.features[2],
+            ecad::SetFeature::UserPrimitive(_)
+        ));
         assert!(matches!(set.features[3], ecad::SetFeature::Trace(_)));
 
-        assert_eq!(set.traces.len(), 2);
-        assert!(matches!(set.traces[1].steps[0], PolyStep::Curve(_)));
-        assert_eq!(set.polygons.len(), 1);
-        assert_eq!(set.lines.len(), 1);
+        let traces = set.traces().collect::<Vec<_>>();
+        assert_eq!(traces.len(), 2);
+        assert!(matches!(traces[1].steps[0], PolyStep::Curve(_)));
+        assert_eq!(set.polygons().count(), 1);
+        assert_eq!(set.lines().count(), 0);
+    }
+
+    #[test]
+    fn skips_invalid_inline_user_special_inside_features() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<IPC-2581 revision="C" xmlns="http://webstds.ipc.org/2581">
+  <Content roleRef="Owner">
+    <FunctionMode mode="FABRICATION"/>
+  </Content>
+  <Ecad>
+    <CadHeader units="MILLIMETER"/>
+    <CadData>
+      <Layer name="F.Cu" layerFunction="SIGNAL"/>
+      <Step name="Board">
+        <LayerFeature layerRef="F.Cu">
+          <Set>
+            <Features>
+              <Line startX="0" startY="0" endX="1" endY="0"/>
+              <UserSpecial>
+                <RectCenter height="1"/>
+              </UserSpecial>
+              <Line startX="0" startY="1" endX="1" endY="1"/>
+            </Features>
+          </Set>
+        </LayerFeature>
+      </Step>
+    </CadData>
+  </Ecad>
+</IPC-2581>"#;
+
+        let doc = Ipc2581::parse(xml).expect("parse IPC-2581");
+        let set = &doc.ecad().unwrap().cad_data.steps[0].layer_features[0].sets[0];
+
+        assert_eq!(set.features.len(), 2);
+        assert!(
+            set.features
+                .iter()
+                .all(|feature| matches!(feature, ecad::SetFeature::Line(_)))
+        );
     }
 
     #[test]
@@ -386,8 +592,8 @@ mod tests {
         };
         assert_eq!(polyline.begin, Point { x: 11.0, y: 20.0 });
         assert!(matches!(polyline.steps[0], PolyStep::Curve(_)));
-        assert_eq!(set.polylines.len(), 1);
-        assert!(set.lines.is_empty());
+        assert_eq!(set.polylines().count(), 1);
+        assert_eq!(set.lines().count(), 0);
     }
 
     #[test]
@@ -432,16 +638,26 @@ mod tests {
         let doc = Ipc2581::parse(xml).expect("parse IPC-2581");
         let set = &doc.ecad().unwrap().cad_data.steps[0].layer_features[0].sets[0];
 
-        assert_eq!(set.polygons.len(), 2);
-        assert_eq!(set.polygons[0].begin, Point { x: 10.0, y: 20.0 });
+        let polygons = set.polygons().collect::<Vec<_>>();
+        assert_eq!(polygons.len(), 1);
+        assert_eq!(polygons[0].begin, Point { x: 10.0, y: 20.0 });
         assert!(matches!(
-            set.polygons[0].steps[1],
+            polygons[0].steps[1],
             PolyStep::Curve(PolyStepCurve {
                 center: Point { x: 10.0, y: 20.0 },
                 ..
             })
         ));
-        assert_eq!(set.polygons[1].begin, Point { x: 12.0, y: 20.0 });
+        let ecad::SetFeature::UserPrimitive(user_primitive) = &set.features[1] else {
+            panic!("expected inline user primitive");
+        };
+        assert_eq!(user_primitive.x, 10.0);
+        assert_eq!(user_primitive.y, 20.0);
+        let UserPrimitive::UserSpecial(user_special) = &user_primitive.primitive;
+        let UserShapeType::Contour(contour) = &user_special.shapes[0].shape else {
+            panic!("expected contour");
+        };
+        assert_eq!(contour.polygon.begin, Point { x: 2.0, y: 0.0 });
     }
 
     #[test]
@@ -461,6 +677,11 @@ mod tests {
               <LineDescRef id="fine"/>
               <FillDesc fillProperty="HOLLOW"/>
             </Polygon>
+            <Cutout>
+              <PolyBegin x="0.25" y="0.25"/>
+              <PolyStepSegment x="0.75" y="0.25"/>
+              <PolyStepSegment x="0.25" y="0.25"/>
+            </Cutout>
           </Contour>
           <Line startX="0" startY="0" endX="1" endY="0">
             <LineDescRef id="fine"/>
@@ -481,10 +702,10 @@ mod tests {
         let UserPrimitive::UserSpecial(user_special) = primitive;
 
         assert_eq!(user_special.shapes.len(), 3);
-        assert!(matches!(
-            user_special.shapes[0].shape,
-            UserShapeType::Polygon(_)
-        ));
+        let UserShapeType::Contour(contour) = &user_special.shapes[0].shape else {
+            panic!("expected contour");
+        };
+        assert_eq!(contour.cutouts.len(), 1);
         assert_eq!(
             user_special.shapes[0]
                 .line_desc_ref
@@ -593,5 +814,85 @@ mod tests {
         assert_eq!(item.pin_count, Some(4));
         assert_eq!(item.ref_des_list.len(), 1);
         assert_eq!(doc.resolve(item.ref_des_list[0].name), "U4");
+    }
+
+    #[test]
+    fn parse_component_preserves_standard_placement_data() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<IPC-2581 revision="C" xmlns="http://webstds.ipc.org/2581">
+  <Content roleRef="Owner">
+    <FunctionMode mode="ASSEMBLY"/>
+  </Content>
+  <Ecad>
+    <CadHeader units="MILLIMETER"/>
+    <CadData>
+      <Step name="board" type="BOARD">
+        <Component refDes="J1" packageRef="CONN_1" part="USB-C" layerRef="B.Cu" layerRefTopside="F.Cu" mountType="THMT" height="1.2">
+          <NonstandardAttribute name="owner" value="diode" type="STRING"/>
+          <Xform xOffset="0.1" yOffset="0.2" rotation="270.0" mirror="true" faceUp="true" scale="1.0"/>
+          <Location x="10.0" y="-2.5"/>
+          <SpecRef id="AssemblySpec"/>
+        </Component>
+      </Step>
+    </CadData>
+  </Ecad>
+</IPC-2581>"#;
+
+        let doc = Ipc2581::parse(xml).expect("parse IPC-2581");
+        let component = &doc.ecad().unwrap().cad_data.steps[0].components[0];
+
+        assert_eq!(doc.resolve(component.ref_des.unwrap()), "J1");
+        assert_eq!(doc.resolve(component.package_ref.unwrap()), "CONN_1");
+        assert_eq!(doc.resolve(component.part), "USB-C");
+        assert_eq!(doc.resolve(component.layer_ref), "B.Cu");
+        assert_eq!(
+            component.layer_ref_topside.map(|sym| doc.resolve(sym)),
+            Some("F.Cu")
+        );
+        assert_eq!(component.mount_type, MountType::Thmt);
+        assert_eq!(component.height, Some(1.2));
+        assert_eq!(component.location.x, 10.0);
+        assert_eq!(component.location.y, -2.5);
+
+        let xform = component.xform.unwrap();
+        assert_eq!(xform.x_offset, 0.1);
+        assert_eq!(xform.y_offset, 0.2);
+        assert_eq!(xform.rotation, 270.0);
+        assert!(xform.mirror);
+        assert!(xform.face_up);
+        assert_eq!(xform.scale, 1.0);
+
+        assert_eq!(component.nonstandard_attributes.len(), 1);
+        assert_eq!(
+            doc.resolve(component.nonstandard_attributes[0].name),
+            "owner"
+        );
+        assert_eq!(component.spec_refs.len(), 1);
+        assert_eq!(doc.resolve(component.spec_refs[0]), "AssemblySpec");
+    }
+
+    #[test]
+    fn parse_component_accepts_tht_mount_type_alias() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<IPC-2581 revision="C" xmlns="http://webstds.ipc.org/2581">
+  <Content roleRef="Owner">
+    <FunctionMode mode="ASSEMBLY"/>
+  </Content>
+  <Ecad>
+    <CadHeader units="MILLIMETER"/>
+    <CadData>
+      <Step name="board" type="BOARD">
+        <Component refDes="J1" part="CONN" layerRef="F.Cu" mountType="THT">
+          <Location x="0" y="0"/>
+        </Component>
+      </Step>
+    </CadData>
+  </Ecad>
+</IPC-2581>"#;
+
+        let doc = Ipc2581::parse(xml).expect("parse IPC-2581");
+        let component = &doc.ecad().unwrap().cad_data.steps[0].components[0];
+
+        assert_eq!(component.mount_type, MountType::Thmt);
     }
 }

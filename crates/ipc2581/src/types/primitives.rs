@@ -256,6 +256,9 @@ pub enum LineProperty {
     Solid,
     Dashed,
     Dotted,
+    Center,
+    Phantom,
+    Erase,
 }
 
 /// Fill description (fill style and color)
@@ -318,6 +321,7 @@ pub enum UserShapeType {
     RectCenter(RectCenter),
     Oval(Oval),
     RectRound(RectRound),
+    Contour(Contour),
     Polygon(Polygon),
     Line(Line),
     Arc(Arc),

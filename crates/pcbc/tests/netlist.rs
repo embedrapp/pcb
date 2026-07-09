@@ -63,11 +63,7 @@ fn extract_position_data(sandbox: &Sandbox, netlist: &serde_json::Value) -> Stri
 const SIMPLE_BOARD_WITH_POSITIONS_ZEN: &str = r#"
 # ```pcb
 # [workspace]
-# pcb-version = "0.3"
-#
-# [dependencies]
-# "gitlab.com/kicad/libraries/kicad-symbols" = "9.0.3"
-# "gitlab.com/kicad/libraries/kicad-footprints" = "9.0.3"
+# pcb-version = "0.4"
 # ```
 
 Resistor = Module("@stdlib/generics/Resistor.zen")
@@ -83,10 +79,10 @@ Led(name="D1", color="red", package="0603", A=led_anode, K=gnd)
 # Position comments that should be parsed and included in netlist
 # pcb:sch R1 x=100.0000 y=200.0000 rot=0
 # pcb:sch D1 x=150.0000 y=200.0000 rot=90
-# pcb:sch VCC_3V3_VCC.1 x=80.0000 y=180.0000 rot=0
-# pcb:sch VCC_3V3_VCC.2 x=120.0000 y=180.0000 rot=0
-# pcb:sch GND_GND.1 x=80.0000 y=220.0000 rot=0
-# pcb:sch GND_GND.2 x=170.0000 y=220.0000 rot=0
+# pcb:sch VCC_3V3.1 x=80.0000 y=180.0000 rot=0
+# pcb:sch VCC_3V3.2 x=120.0000 y=180.0000 rot=0
+# pcb:sch GND.1 x=80.0000 y=220.0000 rot=0
+# pcb:sch GND.2 x=170.0000 y=220.0000 rot=0
 # pcb:sch LED_ANODE x=125.0000 y=200.0000 rot=0
 "#;
 
@@ -106,31 +102,23 @@ LedModule(name="LED2", led_color="red", VCC=vcc_3v3, GND=gnd, CTRL=Gpio("LED_CTR
 # pcb:sch LED1.D1 x=150.0000 y=100.0000 rot=90
 # pcb:sch LED2.R1 x=100.0000 y=200.0000 rot=0
 # pcb:sch LED2.D1 x=150.0000 y=200.0000 rot=90
-# pcb:sch VCC_3V3_VCC.1 x=50.0000 y=150.0000 rot=0
-# pcb:sch VCC_3V3_VCC.2 x=200.0000 y=150.0000 rot=0
-# pcb:sch GND_GND.1 x=50.0000 y=250.0000 rot=0
-# pcb:sch GND_GND.2 x=200.0000 y=250.0000 rot=0
+# pcb:sch VCC_3V3.1 x=50.0000 y=150.0000 rot=0
+# pcb:sch VCC_3V3.2 x=200.0000 y=150.0000 rot=0
+# pcb:sch GND.1 x=50.0000 y=250.0000 rot=0
+# pcb:sch GND.2 x=200.0000 y=250.0000 rot=0
 # pcb:sch LED_CTRL_LED_CTRL x=80.0000 y=120.0000 rot=0
 # pcb:sch LED_CTRL2_LED_CTRL2 x=80.0000 y=220.0000 rot=0
 "#;
 
 const WORKSPACE_PCB_TOML: &str = r#"
 [workspace]
-pcb-version = "0.3"
-
-[dependencies]
-"gitlab.com/kicad/libraries/kicad-symbols" = "9.0.3"
-"gitlab.com/kicad/libraries/kicad-footprints" = "9.0.3"
+pcb-version = "0.4"
 "#;
 
 const SIMPLE_BOARD_WITH_MIRROR_POSITIONS_ZEN: &str = r#"
 # ```pcb
 # [workspace]
-# pcb-version = "0.3"
-#
-# [dependencies]
-# "gitlab.com/kicad/libraries/kicad-symbols" = "9.0.3"
-# "gitlab.com/kicad/libraries/kicad-footprints" = "9.0.3"
+# pcb-version = "0.4"
 # ```
 
 Resistor = Module("@stdlib/generics/Resistor.zen")
@@ -146,10 +134,10 @@ Led(name="D1", color="red", package="0603", A=led_anode, K=gnd)
 # Position comments with optional mirror
 # pcb:sch R1 x=100.0000 y=200.0000 rot=0 mirror=x
 # pcb:sch D1 x=150.0000 y=200.0000 rot=90
-# pcb:sch VCC_3V3_VCC.1 x=80.0000 y=180.0000 rot=0 mirror=y
-# pcb:sch VCC_3V3_VCC.2 x=120.0000 y=180.0000 rot=0
-# pcb:sch GND_GND.1 x=80.0000 y=220.0000 rot=0
-# pcb:sch GND_GND.2 x=170.0000 y=220.0000 rot=0
+# pcb:sch VCC_3V3.1 x=80.0000 y=180.0000 rot=0 mirror=y
+# pcb:sch VCC_3V3.2 x=120.0000 y=180.0000 rot=0
+# pcb:sch GND.1 x=80.0000 y=220.0000 rot=0
+# pcb:sch GND.2 x=170.0000 y=220.0000 rot=0
 # pcb:sch LED_ANODE x=125.0000 y=200.0000 rot=0
 "#;
 
@@ -254,11 +242,7 @@ fn test_netlist_no_positions() {
     let board_zen = r#"
 # ```pcb
 # [workspace]
-# pcb-version = "0.3"
-#
-# [dependencies]
-# "gitlab.com/kicad/libraries/kicad-symbols" = "9.0.3"
-# "gitlab.com/kicad/libraries/kicad-footprints" = "9.0.3"
+# pcb-version = "0.4"
 # ```
 
 Resistor = Module("@stdlib/generics/Resistor.zen")
@@ -284,11 +268,7 @@ fn test_netlist_mixed_position_formats() {
     let board_zen = r#"
 # ```pcb
 # [workspace]
-# pcb-version = "0.3"
-#
-# [dependencies]
-# "gitlab.com/kicad/libraries/kicad-symbols" = "9.0.3"
-# "gitlab.com/kicad/libraries/kicad-footprints" = "9.0.3"
+# pcb-version = "0.4"
 # ```
 
 Resistor = Module("@stdlib/generics/Resistor.zen")
@@ -302,7 +282,7 @@ Resistor(name="R1", value="1kOhm", package="0603", P1=vcc, P2=sig)
 Led(name="D1", color="red", package="0603", A=sig, K=gnd)
 
 # pcb:sch R1 x=100.0000 y=100.0000 rot=0
-# pcb:sch VCC_VCC x=80.0000 y=80.0000 rot=0
+# pcb:sch VCC x=80.0000 y=80.0000 rot=0
 # pcb:sch SIGNAL.1 x=125.0000 y=100.0000 rot=0
 # pcb:sch SIGNAL.2 x=125.0000 y=150.0000 rot=0
 "#;
@@ -359,7 +339,7 @@ vcc = io(Power)
 
 Component(
     name = "R1",
-    footprint = "TEST:0402",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod"),
     pin_defs = {"1": "1"},
     skip_bom = True,
     pins = {"1": vcc},
@@ -369,23 +349,76 @@ Component(
 const NOT_CONNECTED_BOARD_ZEN: &str = r#"
 # ```pcb
 # [workspace]
-# pcb-version = "0.3"
-#
-# [dependencies]
-# "gitlab.com/kicad/libraries/kicad-symbols" = "9.0.3"
-# "gitlab.com/kicad/libraries/kicad-footprints" = "9.0.3"
+# pcb-version = "0.4"
 # ```
 
 PowerConsumer = Module("PowerConsumer.zen")
 
-# NotConnected promotes to Power - the net should retain its NotConnected kind
-nc = NotConnected("NC_PIN")
+# NotConnected satisfies the Power IO but remains an open net
+nc = NotConnected()
 
 PowerConsumer(name = "U1", vcc = nc)
 "#;
 
+const IO_RENAMED_CHILD_ZEN: &str = r#"
+IN_GD = io("IN_GD", Net)
+GND = io("GND", Net)
+
+Component(
+    name = "R1",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod"),
+    pin_defs = {"1": "1", "2": "2"},
+    skip_bom = True,
+    pins = {"1": IN_GD, "2": GND},
+)
+
+# pcb:sch IN_GD.0 x=-351.5200 y=-140.7000 rot=0
+# pcb:sch GND.1 x=-100.0000 y=-50.0000 rot=0
+"#;
+
+const IO_RENAMED_PARENT_ZEN: &str = r#"
+Child = Module("Child.zen")
+
+VBUS_RAW = Net("VBUS_RAW")
+GND = Net("GND")
+
+Child(name = "U1", IN_GD = VBUS_RAW, GND = GND)
+
+# pcb:sch U1.VBUS_RAW.0 x=-1498.6000 y=-25.4000 rot=0
+# pcb:sch U1.GND.1 x=-1562.1000 y=12.7000 rot=0
+"#;
+
+/// Descendant net-symbol overrides (`<child>.<NET>.<idx>` comments in the parent)
+/// must survive conversion even when the parent renames the net across the module
+/// boundary (here `IN_GD=VBUS_RAW`); the override key uses the global net name.
 #[test]
-fn test_netlist_not_connected_promotion() {
+fn test_netlist_descendant_net_symbol_override_with_renamed_io() {
+    let mut sandbox = Sandbox::new().with_workspace();
+    sandbox
+        .write("boards/Child.zen", IO_RENAMED_CHILD_ZEN)
+        .write("boards/Parent.zen", IO_RENAMED_PARENT_ZEN);
+    let output = sandbox.snapshot_run("pcbc", &["build", "boards/Parent.zen", "--netlist"]);
+
+    let json_start = output.find('{').expect("netlist JSON in output");
+    let json_end = output.rfind('}').expect("netlist JSON in output");
+    let netlist: serde_json::Value =
+        serde_json::from_str(&output[json_start..=json_end]).expect("netlist parses as JSON");
+
+    let root_positions = netlist["instances"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find_map(|(path, inst)| path.ends_with(":<root>").then(|| &inst["symbol_positions"]))
+        .expect("root instance present");
+
+    // Renamed io: parent override uses the global net name, not the child's local name.
+    assert_eq!(root_positions["sym:U1.VBUS_RAW#0"]["x"], -1498.6);
+    // Same-named net keeps working.
+    assert_eq!(root_positions["sym:U1.GND#1"]["x"], -1562.1);
+}
+
+#[test]
+fn test_netlist_not_connected_open_intent() {
     let mut sandbox = Sandbox::new();
     sandbox
         .write("boards/PowerConsumer.zen", NOT_CONNECTED_MODULE_ZEN)
@@ -395,5 +428,5 @@ fn test_netlist_not_connected_promotion() {
         "pcbc",
         &["build", "boards/NCBoard.zen", "--netlist"],
     );
-    assert_snapshot!("netlist_not_connected_promotion", output);
+    assert_snapshot!("netlist_not_connected_open_intent", output);
 }

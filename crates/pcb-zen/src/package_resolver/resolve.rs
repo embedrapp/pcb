@@ -9,20 +9,18 @@ use anyhow::{Context, Result, bail};
 use ignore::WalkBuilder;
 use pcb_zen_core::config::{DependencySpec, PcbToml};
 use pcb_zen_core::file_extensions;
-use pcb_zen_core::is_stdlib_module_path;
-use pcb_zen_core::kicad_library::{
-    KicadRepoMatch, effective_kicad_library_for_repo, match_kicad_managed_repo,
-};
 use pcb_zen_core::resolution::{
     FrozenPackage, FrozenPackageIdentity, FrozenResolutionMap, FrozenResolutionSet,
     ResolutionResult, selected_remote_from_hydrated_manifest,
 };
+use pcb_zen_core::{STDLIB_MODULE_PATH, is_stdlib_module_path};
 use semver::Version;
 
 use super::ResolvedDepId;
 use super::manifest::{ManifestLoader, package_version_root};
 use super::materialize::materialize_selected;
-use super::mvs::PackageResolver;
+
+const STANDALONE_PACKAGE_URL: &str = "workspace";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum PackageNode {
@@ -35,6 +33,16 @@ enum PackageNode {
 
 pub fn target_package_urls_for_path(workspace: &WorkspaceInfo, path: &Path) -> Result<Vec<String>> {
     let path = path.canonicalize()?;
+    // The materialized stdlib lives inside the workspace tree but is never a
+    // workspace package; resolve it as the stdlib root.
+    if path.starts_with(canonicalize(&workspace.workspace_stdlib_dir())) {
+        return Ok(vec![STDLIB_MODULE_PATH.to_string()]);
+    }
+
+    if workspace.packages.is_empty() {
+        return Ok(vec![STANDALONE_PACKAGE_URL.to_string()]);
+    }
+
     if path.is_file() {
         return package_url_for_zen(workspace, &path).map(|url| vec![url]);
     }
@@ -62,39 +70,51 @@ pub fn build_frozen_resolution_maps(
     let mut builder = FrozenResolutionBuilder::new(workspace.clone(), offline)?;
     let mut resolutions = BTreeMap::new();
     for package_url in package_urls {
-        let resolution = builder
-            .build(&package_url)
-            .with_context(|| format!("while resolving dependencies for {package_url}"))?;
+        // The stdlib has no manifest to hydrate; its resolution is the
+        // stdlib package alone.
+        let resolution = if is_stdlib_module_path(&package_url) {
+            stdlib_resolution_map(workspace)
+        } else {
+            builder
+                .build(&package_url)
+                .with_context(|| format!("while resolving dependencies for {package_url}"))?
+        };
         resolutions.insert(package_url, resolution);
     }
     Ok(resolutions)
 }
 
-pub fn resolve_workspace_dependencies(
-    mut workspace_info: WorkspaceInfo,
-    path: &Path,
-    offline: bool,
-    locked: bool,
-) -> Result<ResolutionResult> {
-    let package_urls = target_package_urls_or_empty(&workspace_info, path);
-    if use_frozen_resolution(&workspace_info, &package_urls) {
-        return resolve_frozen(workspace_info, package_urls, offline);
+fn stdlib_frozen_package() -> FrozenPackage {
+    FrozenPackage {
+        identity: FrozenPackageIdentity::Stdlib,
+        deps: BTreeMap::new(),
+        parts: Vec::new(),
     }
-
-    let mut res = crate::resolve_dependencies(&mut workspace_info, offline, locked)?;
-    attach_mvs_v2_resolution_for_packages(&mut res, package_urls, offline);
-    Ok(res)
 }
 
-fn target_package_urls_or_empty(workspace_info: &WorkspaceInfo, path: &Path) -> Vec<String> {
-    target_package_urls_for_path(workspace_info, path)
-        .inspect_err(|err| {
-            log::debug!(
-                "Skipping MVS v2 target discovery for {}: {err:#}",
-                path.display()
-            );
-        })
-        .unwrap_or_default()
+fn stdlib_resolution_map(workspace: &WorkspaceInfo) -> FrozenResolutionMap {
+    FrozenResolutionMap {
+        selected_remote: BTreeMap::new(),
+        packages: BTreeMap::from([(
+            canonicalize(&workspace.workspace_stdlib_dir()),
+            stdlib_frozen_package(),
+        )]),
+    }
+}
+
+pub fn resolve_workspace_dependencies(
+    workspace_info: WorkspaceInfo,
+    path: &Path,
+    offline: bool,
+) -> Result<ResolutionResult> {
+    let package_urls = target_package_urls_for_path(&workspace_info, path)?;
+    if package_urls.is_empty() {
+        bail!(
+            "No workspace package target found for {}; run this command from a package or workspace",
+            path.display()
+        );
+    }
+    resolve_frozen(workspace_info, package_urls, offline)
 }
 
 fn resolve_frozen(
@@ -124,90 +144,6 @@ fn resolve_frozen(
         resolution_set,
         symbol_parts,
     ))
-}
-
-fn workspace_vendor_enabled(workspace_info: &WorkspaceInfo) -> bool {
-    workspace_info
-        .config
-        .as_ref()
-        .and_then(|config| config.workspace.as_ref())
-        .is_some_and(|workspace| !workspace.vendor.is_empty())
-}
-
-fn workspace_selected_remote(
-    workspace_info: &WorkspaceInfo,
-    resolver: &mut PackageResolver,
-) -> Result<BTreeSet<(ResolvedDepId, Version)>> {
-    let mut selected = BTreeSet::new();
-
-    for package_url in workspace_info.packages.keys() {
-        let package_selected = if package_has_indirect(workspace_info, package_url) {
-            selected_remote_from_hydrated_manifest(workspace_info, package_url)?
-        } else {
-            resolver.resolve_package(package_url)?.resolved_remote
-        };
-        selected.extend(package_selected);
-    }
-
-    Ok(selected)
-}
-
-pub fn sync_workspace_vendor(
-    workspace_info: &WorkspaceInfo,
-    path: &Path,
-    offline: bool,
-) -> Result<()> {
-    if offline {
-        return Ok(());
-    }
-
-    let package_urls = target_package_urls_or_empty(workspace_info, path);
-    if !use_frozen_resolution(workspace_info, &package_urls)
-        || !workspace_vendor_enabled(workspace_info)
-    {
-        return Ok(());
-    }
-
-    let mut resolver = PackageResolver::new(workspace_info.clone(), offline)?;
-    let selected = workspace_selected_remote(workspace_info, &mut resolver)?;
-    let package_roots = resolver
-        .materialize_selected(selected.iter().map(|(dep_id, version)| (dep_id, version)))?;
-    crate::resolve::vendor_package_roots(workspace_info, &package_roots, &[], None, true)?;
-    Ok(())
-}
-
-pub fn attach_mvs_v2_resolution_for_packages(
-    res: &mut ResolutionResult,
-    package_urls: impl IntoIterator<Item = String>,
-    offline: bool,
-) {
-    let package_urls: Vec<_> = package_urls
-        .into_iter()
-        .filter(|package_url| package_has_indirect(&res.workspace_info, package_url))
-        .collect();
-    if package_urls.is_empty() {
-        return;
-    }
-
-    match build_frozen_resolution_maps(&res.workspace_info, package_urls, offline) {
-        Ok(resolution) => res.set_mvs_v2_resolution(resolution),
-        Err(err) => log::debug!("Skipping shadow MVS v2 resolution: {err:#}"),
-    }
-}
-
-fn use_frozen_resolution(workspace_info: &WorkspaceInfo, package_urls: &[String]) -> bool {
-    !package_urls.is_empty()
-        && (workspace_info.requires_mvs_v2()
-            || package_urls
-                .iter()
-                .all(|package_url| package_has_indirect(workspace_info, package_url)))
-}
-
-fn package_has_indirect(workspace_info: &WorkspaceInfo, package_url: &str) -> bool {
-    workspace_info
-        .packages
-        .get(package_url)
-        .is_some_and(|package| !package.config.dependencies.indirect.is_empty())
 }
 
 fn collect_workspace_zen_files(
@@ -272,8 +208,7 @@ impl FrozenResolutionBuilder {
     }
 
     fn build(&mut self, package_url: &str) -> Result<FrozenResolutionMap> {
-        self.selected_remote = self
-            .selected_remote_from_root_manifest(package_url)
+        self.selected_remote = selected_remote_from_hydrated_manifest(&self.workspace, package_url)
             .with_context(|| format!("while reading resolved closure for {}", package_url))?;
 
         self.materialize_selected_remote()?;
@@ -405,73 +340,23 @@ impl FrozenResolutionBuilder {
             });
         }
 
-        self.add_kicad_sibling_deps(&mut resolved, queue)?;
-
         Ok(resolved)
     }
 
-    fn add_kicad_sibling_deps(
-        &mut self,
-        resolved: &mut BTreeMap<String, PathBuf>,
-        queue: &mut VecDeque<PackageNode>,
-    ) -> Result<()> {
-        let kicad_entries = self.workspace.kicad_library_entries();
-        let resolved_kicad_repos: Vec<_> = resolved
-            .iter()
-            .filter_map(|(repo, root)| {
-                let version = root.file_name().and_then(|name| name.to_str())?;
-                let version = Version::parse(version).ok()?;
-                effective_kicad_library_for_repo(&kicad_entries, repo, &version)
-                    .map(|entry| (entry, version))
-            })
-            .collect();
-
-        for (entry, version) in resolved_kicad_repos {
-            for sibling_repo in entry.repo_urls() {
-                if resolved.contains_key(sibling_repo) {
-                    continue;
-                }
-
-                let dep_id = ResolvedDepId::for_version(sibling_repo.to_string(), &version);
-                let selected_version =
-                    self.selected_remote.get(&dep_id).cloned().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "Resolved closure is missing {}@{} required by KiCad library expansion",
-                            dep_id.path,
-                            dep_id.lane
-                        )
-                    })?;
-                let dep_root = self.remote_package_root(sibling_repo, &selected_version)?;
-                resolved.insert(sibling_repo.to_string(), canonicalize(&dep_root));
-                queue.push_back(PackageNode::Remote {
-                    dep_id,
-                    version: selected_version,
-                });
-            }
-        }
-
-        Ok(())
-    }
-
     fn add_stdlib_package(&mut self) -> Result<()> {
-        let mut deps = BTreeMap::new();
-        for (repo, version) in self.workspace.stdlib_asset_dep_versions() {
-            let root = self.remote_package_root(&repo, &version)?;
-            deps.insert(repo, canonicalize(&root));
-        }
-
         self.packages.insert(
             canonicalize(&self.workspace.workspace_stdlib_dir()),
-            FrozenPackage {
-                identity: FrozenPackageIdentity::Stdlib,
-                deps,
-                parts: Vec::new(),
-            },
+            stdlib_frozen_package(),
         );
         Ok(())
     }
 
     fn workspace_manifest(&self, package_url: &str) -> Result<(PathBuf, PcbToml)> {
+        if self.workspace.packages.is_empty() && package_url == STANDALONE_PACKAGE_URL {
+            let config = self.workspace.config.clone().unwrap_or_default();
+            return Ok((self.workspace.root.clone(), config));
+        }
+
         if let Some(pkg) = self.workspace.packages.get(package_url) {
             return Ok((pkg.dir(&self.workspace.root), pkg.config.clone()));
         }
@@ -509,8 +394,7 @@ impl FrozenResolutionBuilder {
 
         let cache_root =
             package_version_root(self.workspace.workspace_cache_dir(), module_path, version);
-        let managed_kicad = self.is_managed_kicad_dep(module_path, version);
-        if cache_root.join("pcb.toml").exists() || managed_kicad && cache_root.exists() {
+        if cache_root.join("pcb.toml").exists() {
             self.remote_roots.insert(key, cache_root.clone());
             return Ok(cache_root);
         }
@@ -523,31 +407,9 @@ impl FrozenResolutionBuilder {
             );
         }
 
-        if !managed_kicad {
-            ensure_package_manifest_in_cache(module_path, version, &self.cache_index)?;
-        }
+        ensure_package_manifest_in_cache(module_path, version, &self.cache_index)?;
         self.remote_roots.insert(key, cache_root.clone());
         Ok(cache_root)
-    }
-
-    fn is_managed_kicad_dep(&self, path: &str, version: &Version) -> bool {
-        matches!(
-            match_kicad_managed_repo(&self.workspace.kicad_library_entries(), path, version),
-            KicadRepoMatch::SelectorMatched
-        )
-    }
-
-    fn selected_remote_from_root_manifest(
-        &self,
-        package_url: &str,
-    ) -> Result<BTreeMap<ResolvedDepId, Version>> {
-        if self.workspace.requires_mvs_v2() && !package_has_indirect(&self.workspace, package_url) {
-            return Ok(PackageResolver::new(self.workspace.clone(), self.offline)?
-                .resolve_package(package_url)?
-                .resolved_remote);
-        }
-
-        selected_remote_from_hydrated_manifest(&self.workspace, package_url)
     }
 }
 
@@ -599,38 +461,19 @@ fn local_path_dependency_root(package_root: &Path, spec: &DependencySpec) -> Opt
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::path::PathBuf;
-
-    use pcb_zen_core::config::{DependencySpec, PcbToml, WorkspaceConfig};
-
     use super::*;
+    use crate::WorkspacePackage;
 
-    fn workspace(pcb_version: &str, indirect: bool) -> WorkspaceInfo {
-        let package_url = "github.com/example/project/boards/Board".to_string();
-        let mut package_config = PcbToml::default();
-        if indirect {
-            package_config.dependencies.indirect.insert(
-                "github.com/vendor/components/Leaf@1".to_string(),
-                DependencySpec::Version("1.0.0".to_string()),
-            );
-        }
-
+    fn workspace_with_package(root: &Path) -> WorkspaceInfo {
         WorkspaceInfo {
-            root: PathBuf::from("/workspace"),
-            cache_dir: PathBuf::from("/workspace/.pcb/cache"),
-            config: Some(PcbToml {
-                workspace: Some(WorkspaceConfig {
-                    pcb_version: Some(pcb_version.to_string()),
-                    ..WorkspaceConfig::default()
-                }),
-                ..PcbToml::default()
-            }),
+            root: root.to_path_buf(),
+            cache_dir: PathBuf::new(),
+            config: None,
             packages: BTreeMap::from([(
-                package_url,
-                crate::WorkspacePackage {
-                    rel_path: PathBuf::from("boards/Board"),
-                    config: package_config,
+                "github.com/acme/pkg".to_string(),
+                WorkspacePackage {
+                    rel_path: PathBuf::from("pkg"),
+                    config: PcbToml::default(),
                     version: None,
                     published_at: None,
                     preferred: false,
@@ -639,17 +482,61 @@ mod tests {
                     symbol_files: Vec::new(),
                 },
             )]),
-            lockfile: None,
             errors: Vec::new(),
         }
     }
 
     #[test]
-    fn mvs_v2_detection_accepts_pcb_version_0_4_without_indirect_dependencies() {
-        let workspace = workspace("0.4", false);
-        assert!(use_frozen_resolution(
-            &workspace,
-            &["github.com/example/project/boards/Board".to_string()]
-        ));
+    fn stdlib_path_resolves_as_stdlib_root() {
+        let temp = tempfile::tempdir().unwrap();
+        // Workspace roots are canonical in real discovery; mirror that here so
+        // the stdlib prefix checks compare canonical paths.
+        let root = temp.path().canonicalize().unwrap();
+        let stdlib = root.join(".pcb/stdlib");
+        let pin_header = stdlib.join("generics/PinHeader.zen");
+        std::fs::create_dir_all(pin_header.parent().unwrap()).unwrap();
+        std::fs::write(&pin_header, "").unwrap();
+        let workspace = workspace_with_package(&root);
+
+        let targets = target_package_urls_for_path(&workspace, &stdlib).unwrap();
+        assert_eq!(targets, vec![STDLIB_MODULE_PATH.to_string()]);
+
+        let frozen = build_frozen_resolution_maps(&workspace, targets, true).unwrap();
+        let stdlib_resolution = frozen
+            .get(STDLIB_MODULE_PATH)
+            .expect("stdlib root resolution should exist");
+        assert_eq!(stdlib_resolution.packages.len(), 1);
+
+        let package = stdlib_resolution
+            .packages
+            .get(&stdlib)
+            .expect("stdlib package should be registered");
+        assert!(matches!(package.identity, FrozenPackageIdentity::Stdlib));
+
+        let resolution = ResolutionResult::frozen(workspace, frozen, HashMap::new());
+        let (root_package, _) = resolution
+            .frozen_root_for_file(&pin_header)
+            .expect("stdlib files should select the stdlib root package");
+        assert_eq!(root_package, STDLIB_MODULE_PATH);
+    }
+
+    #[test]
+    fn stdlib_file_has_no_root_without_stdlib_resolution() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let stdlib = root.join(".pcb/stdlib");
+        std::fs::create_dir_all(&stdlib).unwrap();
+        let workspace = workspace_with_package(&root);
+
+        // A resolution set without a stdlib root (the build/LSP flows) must
+        // keep returning None for stdlib files rather than misattributing
+        // them to a workspace package.
+        let resolution =
+            ResolutionResult::frozen(workspace, FrozenResolutionSet::default(), HashMap::new());
+        assert!(
+            resolution
+                .frozen_root_for_file(&stdlib.join("interfaces.zen"))
+                .is_none()
+        );
     }
 }

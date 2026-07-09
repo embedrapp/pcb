@@ -10,23 +10,11 @@ use semver::Version;
 
 #[derive(Default)]
 pub struct SpecVersionResolver {
-    offline: bool,
-    bare_repos: BTreeMap<String, PathBuf>,
+    source_repos: BTreeMap<String, PathBuf>,
     base_versions: BTreeMap<String, BTreeMap<String, Version>>,
 }
 
 impl SpecVersionResolver {
-    pub fn new(offline: bool) -> Self {
-        Self {
-            offline,
-            ..Self::default()
-        }
-    }
-
-    pub(crate) fn is_offline(&self) -> bool {
-        self.offline
-    }
-
     pub(crate) fn resolve_spec(
         &mut self,
         module_path: &str,
@@ -39,14 +27,6 @@ impl SpecVersionResolver {
     }
 
     pub fn resolve_ref_or_branch(&mut self, module_path: &str, selector: &str) -> Result<Version> {
-        if self.offline {
-            bail!(
-                "Cannot resolve {}@{} in offline mode",
-                module_path,
-                selector
-            );
-        }
-
         match self.generate_pseudo_version(module_path, selector) {
             Ok(version) => Ok(version),
             Err(rev_err) => {
@@ -89,18 +69,18 @@ impl SpecVersionResolver {
 
     fn generate_pseudo_version(&mut self, module_path: &str, commit: &str) -> Result<Version> {
         let (repo_url, subpath) = split_repo_and_subpath(module_path);
-        let bare_dir = self.ensure_bare_repo(repo_url)?;
-        let commit_full = git::rev_parse(&bare_dir, commit).ok_or_else(|| {
+        let source_dir = self.ensure_source_repo(repo_url)?;
+        let commit_full = git::rev_parse(&source_dir, commit).ok_or_else(|| {
             anyhow::anyhow!(
                 "Failed to resolve rev '{}' in {}",
                 &commit[..commit.len().min(12)],
                 repo_url
             )
         })?;
-        let timestamp = git::show_commit_timestamp(&bare_dir, &commit_full)
+        let timestamp = git::show_commit_timestamp(&source_dir, &commit_full)
             .ok_or_else(|| anyhow::anyhow!("Failed to read timestamp for {}", commit_full))?;
         let base_version = self
-            .latest_tagged_version(repo_url, subpath, &bare_dir)
+            .latest_tagged_version(repo_url, subpath, &source_dir)
             .unwrap_or_else(initial_package_version);
         let dt = jiff::Timestamp::from_second(timestamp)?;
         let pseudo = format!(
@@ -115,12 +95,12 @@ impl SpecVersionResolver {
             .map_err(|e| anyhow::anyhow!("Failed to parse pseudo-version {}: {}", pseudo, e))
     }
 
-    fn ensure_bare_repo(&mut self, repo_url: &str) -> Result<PathBuf> {
-        if let Some(path) = self.bare_repos.get(repo_url) {
+    fn ensure_source_repo(&mut self, repo_url: &str) -> Result<PathBuf> {
+        if let Some(path) = self.source_repos.get(repo_url) {
             return Ok(path.clone());
         }
-        let path = crate::cache_index::ensure_bare_repo(repo_url)?;
-        self.bare_repos.insert(repo_url.to_string(), path.clone());
+        let path = crate::cache_index::ensure_source_repo(repo_url)?;
+        self.source_repos.insert(repo_url.to_string(), path.clone());
         Ok(path)
     }
 
@@ -128,11 +108,11 @@ impl SpecVersionResolver {
         &mut self,
         repo_url: &str,
         subpath: &str,
-        bare_dir: &std::path::Path,
+        source_dir: &std::path::Path,
     ) -> Option<Version> {
         if !self.base_versions.contains_key(repo_url) {
             let mut versions = BTreeMap::new();
-            if let Ok(tags) = git::list_all_tags(bare_dir) {
+            if let Ok(tags) = git::list_all_tags(source_dir) {
                 for tag in tags {
                     if let Some((pkg_path, version)) = tags::parse_tag(&tag) {
                         versions

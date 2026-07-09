@@ -2,7 +2,6 @@
 
 use allocative::Allocative;
 use pcb_sch::physical::PhysicalValue;
-use semver::Version;
 use starlark::{
     any::ProvidesStaticType,
     codemap::ResolvedSpan,
@@ -32,15 +31,12 @@ use crate::{
     },
 };
 
-use super::net::{FrozenNetValue, NetValue, generate_net_id};
+use super::net::{ConnectionIntent, FrozenNetValue, NetValue, generate_net_id};
 use super::part::PartValue;
 use super::path::normalize_path_to_package_uri;
 use super::symbol::{SymbolType, SymbolValue, symbol_pins_from_pad_map};
 use super::validation::validate_identifier_name;
 
-use crate::kicad_library::{
-    KicadSymbolLibraryMatch, match_kicad_library_for_symbol_repo, package_coord_for_path,
-};
 use anyhow::anyhow;
 use thiserror::Error;
 
@@ -239,14 +235,6 @@ impl std::fmt::Debug for FrozenComponentValue {
     }
 }
 
-fn capitalize_first(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        None => String::new(),
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-    }
-}
-
 /// Helper to consolidate boolean properties from kwargs and legacy property names.
 /// Handles both boolean values and string representations ("true", "1", etc.)
 fn consolidate_bool_property<'v>(
@@ -332,9 +320,9 @@ fn warn_legacy_component_inputs<'v>(
         if properties_map.contains_key(*legacy_key) {
             diagnostics.push((
                 format!(
-                    "Component '{component_name}': `properties[\"{legacy_key}\"]` is deprecated; pass `{typed_kwarg}=...` to Component() instead",
+                    "Component '{component_name}': `properties[\"{legacy_key}\"]` is no longer supported; pass `{typed_kwarg}=...` to Component() instead",
                 ),
-                EvalSeverity::Warning,
+                EvalSeverity::Error,
             ));
         }
     }
@@ -344,9 +332,9 @@ fn warn_legacy_component_inputs<'v>(
         if properties_map.contains_key(*key) {
             diagnostics.push((
                 format!(
-                    "Component '{component_name}': `properties[\"{key}\"]` is deprecated; {part_suggestion}",
+                    "Component '{component_name}': `properties[\"{key}\"]` is no longer supported; {part_suggestion}",
                 ),
-                EvalSeverity::Advice,
+                EvalSeverity::Error,
             ));
         }
     }
@@ -812,12 +800,72 @@ fn diagnostic_location(
 fn net_kind_and_name<'v>(value: Value<'v>) -> Option<(&'v str, &'v str)> {
     value
         .downcast_ref::<NetValue>()
-        .map(|net| (net.net_type_name(), net.name()))
+        .map(|net| (net.net_kind_name(), net.name()))
         .or_else(|| {
             value
                 .downcast_ref::<FrozenNetValue>()
-                .map(|net| (net.net_type_name(), net.name()))
+                .map(|net| (net.net_kind_name(), net.name()))
         })
+}
+
+fn net_id_from_value<'v>(value: Value<'v>) -> Option<u64> {
+    value
+        .downcast_ref::<NetValue>()
+        .map(|net| net.net_id())
+        .or_else(|| {
+            value
+                .downcast_ref::<FrozenNetValue>()
+                .map(|net| net.net_id())
+        })
+}
+
+/// Expand explicit jumper groups (symbol pins the part internally bridges) into
+/// effective connections: connected peers auto-fill missing ones, and assigning
+/// distinct nets within one group is an error.
+fn apply_explicit_jumper_connections<'v>(
+    component_name: &str,
+    symbol: &SymbolValue,
+    connections: &mut SmallMap<String, Value<'v>>,
+) -> Result<(), starlark::Error> {
+    for group in symbol.explicit_jumper_signal_groups() {
+        let connected: Vec<(&str, Value<'v>, u64)> = group
+            .iter()
+            .filter_map(|signal_name| {
+                let net = *connections.get(*signal_name)?;
+                Some((*signal_name, net, net_id_from_value(net)?))
+            })
+            .collect();
+
+        let Some(&(_, net, first_id)) = connected.first() else {
+            continue;
+        };
+
+        if connected.iter().any(|&(_, _, id)| id != first_id) {
+            let describe = |net: Value<'v>| match net_kind_and_name(net) {
+                Some((kind, name)) if !name.is_empty() => format!("{kind} '{name}'"),
+                _ => "unnamed net".to_string(),
+            };
+            let assignments: Vec<String> = connected
+                .iter()
+                .map(|&(signal_name, net, _)| format!("{signal_name} -> {}", describe(net)))
+                .collect();
+
+            return Err(starlark::Error::new_other(anyhow!(format!(
+                "Jumpered pins {} on component {} are internally connected but were assigned to different nets: {}. Use one net for the group or explicitly tie the labels together before import.",
+                group.join(", "),
+                component_name,
+                assignments.join(", ")
+            ))));
+        }
+
+        for signal_name in group {
+            if !connections.contains_key(signal_name) {
+                connections.insert(signal_name.to_owned(), net);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn net_diagnostic_location<'v>(
@@ -858,13 +906,12 @@ fn alloc_not_connected<'v>(
         template_name: None,
         original_name: None,
         assignment_inferable: false,
-        derived_from_base_net: false,
         was_bound: std::sync::OnceLock::new(),
         inferred_name: std::sync::OnceLock::new(),
-        inferred_original_name: std::sync::OnceLock::new(),
         declaration_path,
         declaration_span,
-        type_name: "NotConnected".to_string(),
+        type_name: "Net".to_string(),
+        connection_intent: ConnectionIntent::Open,
         properties: SmallMap::new(),
     })
 }
@@ -1006,27 +1053,6 @@ fn infer_footprint_stem_from_property(value: &str) -> Option<String> {
     }
 }
 
-/// Parse KiCad's `Footprint` property form `<lib>:<fp>`.
-///
-/// Returns `None` for the legacy `<stem>:<stem>` form because that is handled
-/// by `infer_footprint_stem_from_property`.
-fn infer_kicad_lib_fp_from_property(value: &str) -> Option<(String, String)> {
-    let trimmed = value.trim();
-    let (lib, fp) = trimmed.split_once(':')?;
-    if lib.is_empty()
-        || fp.is_empty()
-        || fp.contains(':')
-        || lib == fp
-        || lib.contains('/')
-        || lib.contains('\\')
-        || fp.contains('/')
-        || fp.contains('\\')
-    {
-        return None;
-    }
-    Some((lib.to_owned(), fp.to_owned()))
-}
-
 fn infer_local_footprint_from_symbol_property(
     symbol_source: &Path,
     footprint_prop: &str,
@@ -1049,60 +1075,49 @@ fn infer_local_footprint_from_symbol_property(
     Ok(Some(candidate.to_string_lossy().into_owned()))
 }
 
-fn infer_kicad_footprint_fallback(
-    symbol_source: &Path,
+fn infer_kicad_stdlib_footprint_from_symbol_property(
     footprint_prop: &str,
     eval_ctx: &crate::EvalContext,
 ) -> starlark::Result<Option<String>> {
-    let Some((lib, fp)) = infer_kicad_lib_fp_from_property(footprint_prop) else {
+    let trimmed = footprint_prop.trim();
+    let Some((lib, fp)) = trimmed.split_once(':') else {
         return Ok(None);
     };
+    if lib.is_empty()
+        || fp.is_empty()
+        || fp.contains(':')
+        || lib == fp
+        || lib.contains('/')
+        || lib.contains('\\')
+        || fp.contains('/')
+        || fp.contains('\\')
+    {
+        return Ok(None);
+    }
+
     let Some(current_file) = eval_ctx.get_source_path() else {
         return Ok(None);
     };
-    let Some((symbol_repo, symbol_version, _)) =
-        package_coord_for_path(symbol_source, eval_ctx.resolution().package_roots_ref())
-    else {
-        return Ok(None);
-    };
-    let Ok(version) = Version::parse(&symbol_version) else {
-        return Ok(None);
-    };
-
-    let workspace_cfg = eval_ctx.resolution().workspace_info.workspace_config();
-    let footprints_repo = match match_kicad_library_for_symbol_repo(
-        &workspace_cfg.kicad_library,
-        &symbol_repo,
-        &version,
-    ) {
-        KicadSymbolLibraryMatch::Matched(entry) => entry.footprints.clone(),
-        KicadSymbolLibraryMatch::SelectorMismatch => {
-            return Err(starlark::Error::new_other(anyhow!(
-                "Failed to infer footprint from KiCad symbol property '{}': symbol source '{}' resolved to {}@{}, but no matching [[workspace.kicad_library]] major version was found.",
-                footprint_prop,
-                symbol_source.display(),
-                symbol_repo,
-                symbol_version
-            )));
-        }
-        KicadSymbolLibraryMatch::NotSymbolRepo => return Ok(None),
-    };
-
-    let inferred_url = format!("{footprints_repo}/{lib}.pretty/{fp}.kicad_mod");
-    let resolved = eval_ctx
+    let footprint_path = format!("@stdlib/kicad-footprints/{lib}.pretty/{fp}.kicad_mod");
+    let candidate = eval_ctx
         .get_config()
-        .resolve_path(&inferred_url, current_file)
-        .map_err(|_e| {
+        .resolve_path(&footprint_path, current_file)
+        .map_err(|e| {
             starlark::Error::new_other(anyhow!(
-                "Failed to infer footprint from KiCad symbol property '{}': could not resolve inferred footprint path '{}' for {}@{}.",
-                footprint_prop,
-                inferred_url,
-                footprints_repo,
-                symbol_version
+                "Failed to resolve bundled KiCad footprint '{}': {}",
+                footprint_path,
+                e
             ))
         })?;
 
-    Ok(Some(resolved.to_string_lossy().into_owned()))
+    if !eval_ctx.file_provider().exists(&candidate) {
+        return Err(starlark::Error::new_other(anyhow!(
+            "Bundled KiCad footprint not found: {}",
+            footprint_path
+        )));
+    }
+
+    Ok(Some(candidate.to_string_lossy().into_owned()))
 }
 
 fn resolve_component_footprint(
@@ -1147,13 +1162,13 @@ fn resolve_component_footprint(
     }
 
     if let Some(inferred) =
-        infer_kicad_footprint_fallback(&symbol_source, footprint_prop, eval_ctx)?
+        infer_kicad_stdlib_footprint_from_symbol_property(footprint_prop, eval_ctx)?
     {
         return Ok(inferred);
     }
 
     Err(starlark::Error::new_other(anyhow!(
-        "`Footprint` property '{}' is not inferable; expected '<stem>' or '<lib>:<fp>'",
+        "`Footprint` property '{}' is not inferable; expected '<stem>', legacy '<stem>:<stem>', or KiCad '<lib>:<footprint>'",
         footprint_prop
     )))
 }
@@ -1245,26 +1260,20 @@ impl<'v> StarlarkValue<'v> for ComponentValue<'v> {
             }
             // Fallback: check properties map
             _ => {
-                // We have to check both the original and capitalized keys
-                // because config_properties does automatic case conversion
-                // TODO: drop this when config_properties no longer does case conversion
-                let keys = [attr.to_string(), capitalize_first(attr)];
-                keys.iter()
-                    .find_map(|key| data.properties.get(key))
-                    .map(|v| {
-                        // For capacitance/resistance, attempt to convert string to PhysicalValue
-                        let is_special = matches!(
-                            attr,
-                            "capacitance" | "Capacitance" | "resistance" | "Resistance"
-                        );
-                        if is_special
-                            && let Some(s) = v.unpack_str()
-                            && let Ok(pv) = s.parse::<PhysicalValue>()
-                        {
-                            return heap.alloc(pv);
-                        }
-                        v.to_value()
-                    })
+                data.properties.get(attr).map(|v| {
+                    // For capacitance/resistance, attempt to convert string to PhysicalValue
+                    let is_special = matches!(
+                        attr,
+                        "capacitance" | "Capacitance" | "resistance" | "Resistance"
+                    );
+                    if is_special
+                        && let Some(s) = v.unpack_str()
+                        && let Ok(pv) = s.parse::<PhysicalValue>()
+                    {
+                        return heap.alloc(pv);
+                    }
+                    v.to_value()
+                })
             }
         }
     }
@@ -1400,7 +1409,7 @@ impl<'v> StarlarkValue<'v> for ComponentValue<'v> {
             return true;
         }
         let data = self.data.borrow();
-        data.properties.contains_key(attr) || data.properties.contains_key(&capitalize_first(attr))
+        data.properties.contains_key(attr)
     }
 
     fn dir_attr(&self) -> Vec<String> {
@@ -1514,26 +1523,20 @@ impl<'v> StarlarkValue<'v> for FrozenComponentValue {
                 Some(heap.alloc(AllocDict(connections_vec)))
             }
             _ => {
-                // We have to check both the original and capitalized keys
-                // because config_properties does automatic case conversion
-                // TODO: drop this when config_properties no longer does case conversion
-                let keys = [attr.to_string(), capitalize_first(attr)];
-                keys.iter()
-                    .find_map(|key| self.data.properties.get(key))
-                    .map(|v| {
-                        // For capacitance/resistance, attempt to convert string to PhysicalValue
-                        let is_special = matches!(
-                            attr,
-                            "capacitance" | "Capacitance" | "resistance" | "Resistance"
-                        );
-                        if is_special
-                            && let Some(s) = v.to_value().unpack_str()
-                            && let Ok(pv) = s.parse::<PhysicalValue>()
-                        {
-                            return heap.alloc(pv);
-                        }
-                        v.to_value()
-                    })
+                self.data.properties.get(attr).map(|v| {
+                    // For capacitance/resistance, attempt to convert string to PhysicalValue
+                    let is_special = matches!(
+                        attr,
+                        "capacitance" | "Capacitance" | "resistance" | "Resistance"
+                    );
+                    if is_special
+                        && let Some(s) = v.to_value().unpack_str()
+                        && let Ok(pv) = s.parse::<PhysicalValue>()
+                    {
+                        return heap.alloc(pv);
+                    }
+                    v.to_value()
+                })
             }
         }
     }
@@ -1558,7 +1561,6 @@ impl<'v> StarlarkValue<'v> for FrozenComponentValue {
             return true;
         }
         self.data.properties.contains_key(attr)
-            || self.data.properties.contains_key(&capitalize_first(attr))
     }
 
     fn dir_attr(&self) -> Vec<String> {
@@ -1928,6 +1930,7 @@ where
                             raw_sexp: symbol_value.raw_sexp.clone(),
                             properties: symbol_value.properties.clone(),
                             in_bom: symbol_value.in_bom,
+                            internal_connectivity: symbol_value.internal_connectivity.clone(),
                         }
                     } else {
                         // symbol is not a Symbol type, just use pin_defs
@@ -1940,6 +1943,7 @@ where
                             raw_sexp: None,
                             properties: SmallMap::new(),
                             in_bom: true,
+                            internal_connectivity: pcb_sch::InternalConnectivity::default(),
                         }
                     }
                 } else {
@@ -1953,6 +1957,7 @@ where
                         raw_sexp: None,
                         properties: SmallMap::new(),
                         in_bom: true,
+                        internal_connectivity: pcb_sch::InternalConnectivity::default(),
                     }
                 }
             } else if let Some(symbol) = &symbol_val {
@@ -1976,11 +1981,9 @@ where
                 )));
             };
 
-            // Resolve footprint source in one place:
-            // explicit `footprint` if set, otherwise infer from symbol `Footprint` as either
-            // `<symbol_dir>/<stem>.kicad_mod` or KiCad `<lib>:<fp>` mapped through
-            // matching `[[workspace.kicad_library]]` to `<footprints-repo>/<lib>.pretty/<fp>.kicad_mod`,
-            // then normalize to `package://...` when possible.
+            // Resolve footprint source in one place: explicit `footprint` if set,
+            // otherwise infer `<symbol_dir>/<stem>.kicad_mod` from the symbol
+            // `Footprint`, then normalize to `package://...` when possible.
             let ctx = eval_ctx.eval_context().ok_or_else(|| {
                 starlark::Error::new_other(anyhow!("Component() requires an evaluation context"))
             })?;
@@ -2016,6 +2019,8 @@ where
                 warn_pin_net_compatibility(eval_ctx, &name, &final_symbol, &signal_name, v_val);
                 connections.insert(signal_name, v_val);
             }
+
+            apply_explicit_jumper_connections(&name, &final_symbol, &mut connections)?;
 
             // Auto-fill unambiguously no_connect pins and error on all other missing pins.
             let mut missing_pins: Vec<&str> = final_symbol
@@ -2292,6 +2297,7 @@ mod tests {
             raw_sexp: None,
             properties,
             in_bom: true,
+            internal_connectivity: pcb_sch::InternalConnectivity::default(),
         }
     }
 

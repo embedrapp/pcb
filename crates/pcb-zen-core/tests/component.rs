@@ -5,10 +5,21 @@ use pcb_zen_core::DiagnosticsPass;
 use pcb_zen_core::SortPass;
 use pcb_zen_core::lang::component::FrozenComponentValue;
 use pcb_zen_core::lang::error::CategorizedDiagnostic;
+use pcb_zen_core::lang::net::FrozenNetValue;
 use starlark::errors::EvalSeverity;
+use starlark::values::{FrozenValue, ValueLike};
 
 fn eval_single_root_component(source: &str) -> FrozenComponentValue {
-    let result = common::eval_zen(vec![("test.zen".to_string(), source.to_string())]);
+    eval_single_root_component_with_files(vec![("test.zen", source)])
+}
+
+fn eval_single_root_component_with_files(files: Vec<(&str, &str)>) -> FrozenComponentValue {
+    let result = common::eval_zen(
+        files
+            .into_iter()
+            .map(|(path, content)| (path.to_string(), content.to_string()))
+            .collect(),
+    );
     assert!(result.is_success(), "eval failed: {:?}", result.diagnostics);
 
     let output = result.output.expect("expected eval output");
@@ -32,6 +43,27 @@ fn eval_single_root_component(source: &str) -> FrozenComponentValue {
         .expect("expected one component")
 }
 
+fn frozen_net_id(value: FrozenValue) -> u64 {
+    value
+        .downcast_ref::<FrozenNetValue>()
+        .expect("expected frozen net")
+        .net_id()
+}
+
+const EXPLICIT_JUMPER_SYMBOL: &str = r#"(kicad_symbol_lib
+  (version 20251024)
+  (generator "test")
+  (symbol "ExplicitJumper"
+    (property "Reference" "JP")
+    (property "Footprint" File("@kicad-footprints/Jumper.pretty/SolderJumper-2_P1.3mm_Open_Pad1.0x1.5mm.kicad_mod"))
+    (jumper_pin_groups ("1" "3"))
+    (symbol "ExplicitJumper_1_1"
+      (pin passive line (at 0 0 0) (length 2.54) (name "A") (number "1"))
+      (pin passive line (at 0 0 0) (length 2.54) (name "B") (number "3"))
+    )
+  )
+)"#;
+
 #[test]
 fn component_prefers_part_datasheet_over_component_datasheet() {
     let component = eval_single_root_component(
@@ -41,7 +73,7 @@ P2 = Net()
 
 Component(
     name = "R1",
-    footprint = "Resistor_SMD:R_0603_1005Metric",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"),
     pin_defs = {"1": "1", "2": "2"},
     pins = {"1": P1, "2": P2},
     datasheet = "component.pdf",
@@ -78,7 +110,7 @@ builtin.add_component_modifier(match_part)
 
 Component(
     name = "R1",
-    footprint = "Resistor_SMD:R_0603_1005Metric",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"),
     pin_defs = {"1": "1", "2": "2"},
     pins = {"1": P1, "2": P2},
 )
@@ -137,15 +169,13 @@ fn file_backed_footprint_validation_reports_embedded_file_errors() {
     ]);
     assert!(result.is_success(), "eval failed: {:?}", result.diagnostics);
 
-    let schematic_result = result
+    let diagnostics = result
         .output
         .expect("expected eval output")
-        .to_schematic_with_diagnostics();
+        .validate_footprints();
 
-    assert!(schematic_result.diagnostics.has_errors());
-    let footprint_diags = schematic_result
-        .diagnostics
-        .diagnostics
+    assert!(diagnostics.iter().any(|d| d.is_error()));
+    let footprint_diags = diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.body.contains("uses invalid footprint"))
         .collect::<Vec<_>>();
@@ -179,7 +209,7 @@ builtin.add_component_modifier(match_part)
 
 Component(
     name = "R1",
-    footprint = "Resistor_SMD:R_0603_1005Metric",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"),
     pin_defs = {"1": "1", "2": "2"},
     pins = {"1": P1, "2": P2},
     part = builtin.Part(
@@ -210,7 +240,7 @@ snapshot_eval!(component_properties, {
                 "OE": Net("OE"),
             },
             symbol = Symbol(library = "C146731.kicad_sym", name = "NB3N551DG"),
-            footprint = "SMD:0805",
+            footprint = File("@kicad-footprints/Capacitor_SMD.pretty/C_0805_2012Metric.kicad_mod"),
             properties = {"CustomProp": "Value123"},
         )
     "#
@@ -260,6 +290,65 @@ snapshot_eval!(component_with_symbol, {
         )
     "#
 });
+
+#[test]
+fn component_explicit_jumper_group_auto_fills_missing_peer() {
+    let component = eval_single_root_component_with_files(vec![
+        ("explicit_jumper.kicad_sym", EXPLICIT_JUMPER_SYMBOL),
+        (
+            "test.zen",
+            r#"
+shared = Net("SHARED")
+
+Component(
+    name = "JP1",
+    footprint = File("@kicad-footprints/Jumper.pretty/SolderJumper-2_P1.3mm_Open_Pad1.0x1.5mm.kicad_mod"),
+    symbol = Symbol(library = "explicit_jumper.kicad_sym", name = "ExplicitJumper"),
+    pins = {"A": shared},
+)
+"#,
+        ),
+    ]);
+
+    assert!(component.connections().contains_key("A"));
+    assert!(component.connections().contains_key("B"));
+    assert_eq!(
+        frozen_net_id(*component.connections().get("A").unwrap()),
+        frozen_net_id(*component.connections().get("B").unwrap())
+    );
+}
+
+#[test]
+fn component_explicit_jumper_group_conflicting_nets_error() {
+    let result = common::eval_zen(vec![
+        (
+            "explicit_jumper.kicad_sym".to_string(),
+            EXPLICIT_JUMPER_SYMBOL.to_string(),
+        ),
+        (
+            "test.zen".to_string(),
+            r#"
+Component(
+    name = "JP1",
+    footprint = File("@kicad-footprints/Jumper.pretty/SolderJumper-2_P1.3mm_Open_Pad1.0x1.5mm.kicad_mod"),
+    symbol = Symbol(library = "explicit_jumper.kicad_sym", name = "ExplicitJumper"),
+    pins = {"A": Net("LEFT"), "B": Net("RIGHT")},
+)
+"#
+            .to_string(),
+        ),
+    ]);
+
+    assert!(!result.is_success(), "expected eval failure");
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.to_string().contains("Jumpered pins A, B")),
+        "expected jumper conflict diagnostic, got {:?}",
+        result.diagnostics
+    );
+}
 
 snapshot_eval!(component_infers_spice_model_from_symbol, {
     "my_model.lib" => r#"
@@ -1180,7 +1269,7 @@ symbol = Symbol(library = "nc_pin.kicad_sym")
 
 Component(
     name = "U1",
-    footprint = "TEST:0402",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod"),
     symbol = symbol,
     pins = {
         "NC": Net("SIG"),
@@ -1229,12 +1318,12 @@ fn warns_for_explicit_not_connected_pin() {
         (
             "test.zen".to_string(),
             r#"
-NotConnected = builtin.net_type("NotConnected")
+NotConnected = builtin.not_connected
 symbol = Symbol(library = "nc_pin.kicad_sym")
 
 Component(
     name = "U1",
-    footprint = "TEST:0402",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod"),
     symbol = symbol,
     pins = {
         "NC": NotConnected(),
@@ -1287,7 +1376,7 @@ symbol = Symbol(library = "nc_pin.kicad_sym")
 
 Component(
     name = "U1",
-    footprint = "TEST:0402",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod"),
     symbol = symbol,
     pins = {},
 )
@@ -1332,7 +1421,7 @@ symbol = Symbol(library = "power_pin.kicad_sym")
 
 Component(
     name = "U1",
-    footprint = "TEST:0402",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod"),
     symbol = symbol,
     pins = {
         "VCC": Net("VCC"),
@@ -1385,7 +1474,7 @@ symbol = Symbol(library = "alt_pin.kicad_sym")
 
 Component(
     name = "U1",
-    footprint = "TEST:0402",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod"),
     symbol = symbol,
     pins = {
         "PIO1": Net("SIG"),
@@ -1525,6 +1614,7 @@ fn legacy_property_diagnostics(
                 (&diag.severity, &severity),
                 (EvalSeverity::Warning, EvalSeverity::Warning)
                     | (EvalSeverity::Advice, EvalSeverity::Advice)
+                    | (EvalSeverity::Error, EvalSeverity::Error)
             )
         })
         .filter_map(|diag| {
@@ -1543,8 +1633,8 @@ fn legacy_property_diagnostics(
 }
 
 #[test]
-fn warns_for_each_legacy_component_property_key() {
-    let diagnostics = eval_component_diagnostics(vec![(
+fn errors_for_each_legacy_component_property_key() {
+    let result = common::eval_zen(vec![(
         "test.zen".to_string(),
         r#"
 P1 = Net()
@@ -1552,7 +1642,7 @@ P2 = Net()
 
 Component(
     name = "R1",
-    footprint = "Resistor_SMD:R_0603_1005Metric",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"),
     pin_defs = {"1": "1", "2": "2"},
     pins = {"1": P1, "2": P2},
     properties = {
@@ -1578,9 +1668,10 @@ Component(
 "#
         .to_string(),
     )]);
+    let mut diagnostics = result.diagnostics;
+    SortPass.apply(&mut diagnostics);
 
-    let warning_bodies = legacy_property_diagnostics(&diagnostics, EvalSeverity::Warning);
-    let advice_bodies = legacy_property_diagnostics(&diagnostics, EvalSeverity::Advice);
+    let error_bodies = legacy_property_diagnostics(&diagnostics, EvalSeverity::Error);
 
     for (legacy_key, typed_kwarg) in [
         ("do_not_populate", "dnp"),
@@ -1598,23 +1689,23 @@ Component(
         ("Description", "description"),
     ] {
         let expected = format!(
-            "Component 'R1': `properties[\"{legacy_key}\"]` is deprecated; pass `{typed_kwarg}=...` to Component() instead"
+            "Component 'R1': `properties[\"{legacy_key}\"]` is no longer supported; pass `{typed_kwarg}=...` to Component() instead"
         );
         assert!(
-            warning_bodies.iter().any(|b| b == &expected),
-            "expected legacy-property warning for `{legacy_key}`, got: {:?}",
-            warning_bodies
+            error_bodies.iter().any(|b| b == &expected),
+            "expected legacy-property error for `{legacy_key}`, got: {:?}",
+            error_bodies
         );
     }
 
     for sourcing_key in ["mpn", "Mpn", "manufacturer", "Manufacturer"] {
         let expected = format!(
-            "Component 'R1': `properties[\"{sourcing_key}\"]` is deprecated; pass `part=Part(mpn=..., manufacturer=...)` to Component() instead"
+            "Component 'R1': `properties[\"{sourcing_key}\"]` is no longer supported; pass `part=Part(mpn=..., manufacturer=...)` to Component() instead"
         );
         assert!(
-            advice_bodies.iter().any(|b| b == &expected),
-            "expected sourcing-key advice for `{sourcing_key}`, got: {:?}",
-            advice_bodies
+            error_bodies.iter().any(|b| b == &expected),
+            "expected sourcing-key error for `{sourcing_key}`, got: {:?}",
+            error_bodies
         );
     }
 }
@@ -1629,7 +1720,7 @@ P2 = Net()
 
 Component(
     name = "R1",
-    footprint = "Resistor_SMD:R_0603_1005Metric",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"),
     pin_defs = {"1": "1", "2": "2"},
     pins = {"1": P1, "2": P2},
     part = builtin.Part(mpn = "RC0603FR-071KL", manufacturer = "Yageo"),
@@ -1669,7 +1760,7 @@ P2 = Net()
 
 Component(
     name = "R1",
-    footprint = "Resistor_SMD:R_0603_1005Metric",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"),
     pin_defs = {"1": "1", "2": "2"},
     pins = {"1": P1, "2": P2},
     mpn = "RC0603FR-071KL",
@@ -1710,7 +1801,7 @@ P2 = Net()
 
 Component(
     name = "R1",
-    footprint = "Resistor_SMD:R_0603_1005Metric",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"),
     pin_defs = {"1": "1", "2": "2"},
     pins = {"1": P1, "2": P2},
     mpn = "",
@@ -1752,7 +1843,7 @@ P2 = Net()
 
 Component(
     name = "R1",
-    footprint = "Resistor_SMD:R_0603_1005Metric",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"),
     pin_defs = {"1": "1", "2": "2"},
     pins = {"1": P1, "2": P2},
     part = builtin.Part(mpn = "RC0603FR-071KL", manufacturer = "Yageo"),
@@ -1777,20 +1868,45 @@ Component(
 
 #[test]
 fn legacy_dnp_property_still_takes_effect() {
-    let component = eval_single_root_component(
+    let result = common::eval_zen(vec![(
+        "test.zen".to_string(),
         r#"
 P1 = Net()
 P2 = Net()
 
 Component(
     name = "R1",
-    footprint = "Resistor_SMD:R_0603_1005Metric",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"),
     pin_defs = {"1": "1", "2": "2"},
     pins = {"1": P1, "2": P2},
     properties = {"do_not_populate": True},
 )
-"#,
+"#
+        .to_string(),
+    )]);
+    let mut diagnostics = result.diagnostics;
+    SortPass.apply(&mut diagnostics);
+
+    assert!(
+        legacy_property_diagnostics(&diagnostics, EvalSeverity::Error)
+            .iter()
+            .any(|body| body.contains("`properties[\"do_not_populate\"]` is no longer supported")),
+        "expected legacy-property error, got: {:?}",
+        diagnostics
     );
+
+    let output = result
+        .output
+        .expect("expected eval output despite diagnostics");
+    let module_tree = output.module_tree();
+    let root_module = module_tree
+        .values()
+        .find(|module| module.path().is_root())
+        .expect("expected root module");
+    let component = root_module
+        .components()
+        .next()
+        .expect("expected root component");
 
     assert!(
         component.dnp(),

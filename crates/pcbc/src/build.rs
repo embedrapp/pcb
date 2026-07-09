@@ -28,6 +28,9 @@ pub(crate) struct BuildEvalState {
 pub(crate) struct BuildResult {
     pub(crate) schematic: Option<Schematic>,
     pub(crate) diagnostics: Diagnostics,
+    /// Evaluation output backing `schematic`, for follow-up passes such as
+    /// footprint validation in `pcb layout`.
+    pub(crate) eval_output: Option<pcb_zen_core::EvalOutput>,
 }
 
 impl BuildEvalState {
@@ -92,14 +95,14 @@ impl BuildEvalState {
             None
         };
 
-        let schematic = output.and_then(|eval_output| {
+        let schematic = output.as_ref().and_then(|eval_output| {
             let _span = info_span!("to_schematic").entered();
             let schematic_result = eval_output.to_schematic_with_diagnostics();
             diagnostics
                 .diagnostics
                 .extend(schematic_result.diagnostics.diagnostics);
             if let Some(ref schematic) = schematic_result.output {
-                let erc_diagnostics = pcb_zen_core::run_schematic_erc(&eval_output, schematic);
+                let erc_diagnostics = pcb_zen_core::run_schematic_erc(eval_output, schematic);
                 for diag in erc_diagnostics.diagnostics {
                     diagnostics.push_unique(diag);
                 }
@@ -140,12 +143,14 @@ impl BuildEvalState {
             return BuildResult {
                 schematic: None,
                 diagnostics,
+                eval_output: output,
             };
         }
 
         BuildResult {
             schematic,
             diagnostics,
+            eval_output: output,
         }
     }
 }
@@ -230,11 +235,6 @@ pub struct BuildArgs {
     /// Supports hierarchical matching (e.g., 'style' matches 'style.naming.io')
     #[arg(short = 'W', long = "warn", value_name = "KIND")]
     pub warn: Vec<String>,
-
-    /// Require that pcb.toml is up-to-date and verify pcb.sum if it exists.
-    /// Does not write pcb.toml or pcb.sum. Recommended for CI.
-    #[arg(long)]
-    pub locked: bool,
 }
 
 enum BuildInput {
@@ -427,8 +427,7 @@ pub fn execute(args: BuildArgs) -> Result<()> {
     let config_inputs = parse_config_overrides(&args.config)?;
 
     // Resolve dependencies before finding .zen files
-    let resolution =
-        crate::resolve::resolve(build_input.resolve_path(), args.offline, args.locked)?;
+    let resolution = crate::resolve::resolve(build_input.resolve_path(), args.offline)?;
     let workspace_root = resolution.workspace_info.root.clone();
 
     let zen_files = build_input.collect_zen_files(&resolution.workspace_info)?;

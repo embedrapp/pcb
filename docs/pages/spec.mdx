@@ -74,8 +74,8 @@ Remote package URLs do not include versions. Declare versions in `pcb.toml`, the
 run `pcb sync` to reconcile imports and hydrate dependency manifests. `@stdlib`
 is toolchain-managed and implicit.
 
-See [Packages](/pages/packages) for version resolution, KiCad library
-configuration, and dependency commands.
+See [Packages](/pages/packages) for version resolution, package manifests, and
+dependency commands.
 
 ### Project Structure
 
@@ -106,7 +106,7 @@ Use `pcb new package <path>` to add modules or components inside the board repos
 ```toml
 [workspace]
 repository = "github.com/myorg/MainBoard"
-pcb-version = "0.3"
+pcb-version = "0.4"
 endpoint = "diode.computer"
 
 [board]
@@ -117,12 +117,12 @@ description = "Replace with concise board description."
 
 - `name`: Optional Diode workspace name override for board release uploads. When omitted, publish uses the first path segment of `repository`, such as `myorg` from `github.com/myorg/MainBoard`.
 - `repository`: Git remote URL (used to derive package URLs for publishing)
-- `pcb-version`: Compatible `pcbc` toolchain release lane (e.g., `"0.3"`) or the explicit moving `"nightly"` channel. For semver lanes, `pcb` selects the newest installed toolchain in that lane, installing the newest available patch release for the lane when none is installed. It never auto-upgrades a workspace across lanes such as `"0.3"` to `"0.4"`; run `pcb migrate` to make breaking-version upgrades explicit. Required for workspaces.
+- `pcb-version`: Required `pcbc` toolchain lane, such as `"0.3"`, `"0.4"`, or `"nightly"`. For semver lanes, `pcb` selects the newest installed patch in that lane and installs one if needed. Ordinary commands never auto-upgrade across lanes; use `pcb migrate` to run the latest stable toolchain migrations and update this field after they succeed.
 - `endpoint`: Optional Diode host suffix used for workspace-scoped app/API URLs. `"diode.computer"` resolves to `app.diode.computer` and `api.diode.computer`.
 - `[board]`: Defines the repository's buildable board with `name`, entry `path`, and a short `description`
 
-Older workspace formats are no longer supported. If you have an older project,
-run `pcb migrate` to upgrade manifests and import paths.
+Older workspace formats are no longer supported. Update legacy manifests and
+imports before building with the current toolchain.
 Only the workspace root `pcb.toml` should contain a `[workspace]` section.
 Board dependencies are also declared in the root manifest's `[dependencies]` table.
 
@@ -150,7 +150,7 @@ Registry manifests include `[workspace]` but do not include `[board]`:
 ```toml
 [workspace]
 repository = "github.com/myorg/registry"
-pcb-version = "0.3"
+pcb-version = "0.4"
 ```
 
 **Package manifest** (e.g., `modules/PowerSupply/pcb.toml`):
@@ -176,7 +176,7 @@ See [Packages](/pages/packages) for the complete manifest reference.
 These stdlib symbols are available in every user `.zen` file without `load()`:
 
 - `io`, `input`, `output` — from `@stdlib/io.zen`
-- `Net`, `Power`, `Ground`, `NotConnected` — from `@stdlib/interfaces.zen`
+- `Net`, `Power`, `Ground`, and the `NotConnected()` open-net constructor — from `@stdlib/interfaces.zen`
 - `Board` — from `@stdlib/board_config.zen`
 - `Layout`, `Part` — from `@stdlib/properties.zen`
 
@@ -186,7 +186,7 @@ Local definitions shadow prelude symbols. The prelude does not apply to stdlib m
 
 ### Nets
 
-A `Net` represents an electrical connection between component pins. `Net` is the base net type; specialized types like `Power`, `Ground`, and `NotConnected` add metadata (schematic symbols, voltage) while remaining fundamentally nets.
+A `Net` represents an electrical connection between component pins. `Net` is the base net type; specialized types like `Power` and `Ground` add metadata (schematic symbols, voltage) while remaining fundamentally nets. `NotConnected` is a constructor for an intentionally open net, not a net type.
 
 ```python
 load("@stdlib/units.zen", "Impedance")
@@ -200,11 +200,15 @@ VREF = Net()  # inferred from assignment
 VCC = Power("VCC_3V3", voltage="3.3V")
 GND = Ground()  # inferred from assignment; voltage defaults to 0V
 
-# Intentionally unconnected
+# Intentionally open
 nc = NotConnected()
 ```
 
-`Net(name, voltage=None, impedance=None)` — all parameters optional. `Power` and `Ground` additionally accept a `voltage` parameter. Additional net types (`Analog`, `Pwm`, `Gpio`) are available from `@stdlib/interfaces.zen`.
+`Net(name_or_net=None, voltage=None, impedance=None)` accepts a positional-only
+name string or existing net to cast. `Power` and `Ground` also accept `voltage`.
+Additional connected net types (`Analog`, `Pwm`, `Gpio`) are available from
+`@stdlib/interfaces.zen`. `NotConnected` is reserved for the open-net
+constructor; `builtin.net_type("NotConnected")` is invalid.
 
 If a net constructor omits `name`, the assigned variable name is used when available:
 
@@ -215,16 +219,32 @@ VDD = Power()     # equivalent to Power("VDD")
 
 If you do spell out the same name that assignment inference would choose, Zener raises a style advice because the explicit name is redundant.
 
-Explicit constructor names still win, and unassigned constructor calls keep the existing generated-name behavior:
+Explicit constructor names still win. Regular nets must either have a name or be
+assigned where a name can be inferred:
 
 ```python
 alias = Net("CLK")  # name is "CLK", not "alias"
-Net()               # uses an auto-generated name
+Net()               # error: Net is unnamed
 ```
 
-Typed net fields validate against their declared field type and use the same string coercions as module inputs, so `Power("VCC", voltage="3.3V")` is equivalent to `Power("VCC", voltage=Voltage("3.3V"))`.
+Regular net names must be unique. Duplicate regular net names are rejected; open `NotConnected()` nets are exempt.
+`NotConnected()` has no source-level name. If you pass a name, it is ignored with a warning, and downstream tools assign connection-derived names where needed.
 
-Net types follow automatic conversion rules across `io()` boundaries: `NotConnected` promotes to any type (universal donor), any specialized type demotes to `Net`, but `Net` cannot automatically promote to specialized types. For explicit casting, call the target constructor with an existing net: `Power(net, voltage=Voltage("3.3V"))` or `Net(power_net)`.
+Typed net fields validate against their declared field type and use the same
+string coercions as module inputs, so `Power("VCC", voltage="3.3V")` is
+equivalent to `Power("VCC", voltage=Voltage("3.3V"))`.
+
+Net type annotations on `io()` boundaries check electrical compatibility; they
+do not change whether a provided value is connected or intentionally open.
+`NotConnected()` can satisfy any net-shaped `io()` because it is an open net
+value, and it remains `NotConnected` in the emitted netlist. Specialized
+connected types can be viewed as `Net`; plain connected `Net` values do not
+automatically promote to specialized types.
+
+Explicit constructors assert the resulting connected net type. For example,
+`Net(NotConnected())` constructs a regular connected `Net`, while passing
+`NotConnected()` directly to `io(Net)` keeps it open. `NotConnected` itself is
+not valid where a type is expected, such as `io(NotConnected)`.
 
 ### Interfaces
 
@@ -331,7 +351,7 @@ Use `Part` with the `part` parameter on `Component()` for primary sourcing, and 
 ```python
 Component(
     name = "R1",
-    symbol = Symbol(library="@kicad-symbols/Device.kicad_sym", name="R"),
+    symbol = Symbol(library="Device.kicad_sym", name="R"),
     pins = {"P1": vcc, "P2": gnd},
     part = Part(
         mpn = "RC0603FR-0710KL",
@@ -355,12 +375,12 @@ A `Symbol` represents a schematic symbol loaded from a KiCad symbol library.
 
 ```python
 ic_symbol = Symbol(library="TCA9554DBR.kicad_sym")
-connector = Symbol(library="@kicad-symbols/Connector_Generic.kicad_sym", name="Conn_01x14")
+connector = Symbol(library="Connector_Generic.kicad_sym", name="Conn_01x14")
 ```
 
 **Constructor**: `Symbol(library, name=None)`
 
-- `library`: Path to a `.kicad_sym` file. Supports local paths, `@kicad-symbols/` alias, and package paths.
+- `library`: Path to a `.kicad_sym` file. Supports local paths and package paths.
 - `name`: Symbol name within the library. Required for multi-symbol libraries; omit for single-symbol files.
 
 ### Physical Quantities
@@ -585,7 +605,7 @@ When `layers` is provided, `Board()` selects an appropriate default stackup, net
 
 ```python
 datasheet = File("TPS54331.pdf")
-footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod")
+footprint = File("Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod")
 ```
 
 **`Path(path, allow_not_exist=False)`** — Like `File()` but supports package paths and optional non-existence.

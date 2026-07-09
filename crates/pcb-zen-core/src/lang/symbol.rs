@@ -1,6 +1,6 @@
 #![allow(clippy::needless_lifetimes)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use allocative::Allocative;
@@ -20,8 +20,8 @@ use tracing::instrument;
 
 use std::collections::{HashMap, HashSet};
 
-use crate::EvalContext;
 use crate::lang::evaluator_ext::EvaluatorExt;
+use crate::{EvalContext, EvalContextConfig, FileProvider};
 
 use anyhow::anyhow;
 use pcb_eda::kicad::symbol_library::KicadSymbolLibrary;
@@ -74,6 +74,10 @@ pub struct SymbolValue {
     pub raw_sexp: Option<String>, // Raw s-expression of the symbol (if loaded from file, otherwise None)
     pub properties: SmallMap<String, String>, // Properties from the symbol definition
     pub in_bom: bool,             // KiCad in_bom flag (inverse of skip_bom)
+    #[freeze(identity)]
+    #[trace(unsafe_ignore)]
+    #[allocative(skip)]
+    pub internal_connectivity: pcb_sch::InternalConnectivity,
 }
 
 impl std::fmt::Debug for SymbolValue {
@@ -249,6 +253,7 @@ impl<'v> SymbolValue {
                 raw_sexp: None,
                 properties: SmallMap::new(),
                 in_bom: true,
+                internal_connectivity: pcb_sch::InternalConnectivity::default(),
             })
         }
         // Case 2: Load from library
@@ -263,97 +268,117 @@ impl<'v> SymbolValue {
                 std::path::Path::new(&current_file),
             )?;
 
-            let file_provider = eval_ctx.file_provider();
-
-            let (_symbol_name, symbol, source_path) = if file_provider.is_directory(&resolved_path)
-            {
-                load_split_library_symbol(&resolved_path, name, file_provider)?
-            } else {
-                // Get or load the library (lazy - only scans for symbol names, doesn't parse them)
-                let library = get_or_load_library(&resolved_path, file_provider)?;
-
-                // Determine which symbol to use
-                let symbol_name = if let Some(name) = name {
-                    // Verify the symbol exists
-                    if !library.has_symbol(&name) {
-                        let available: Vec<_> = library.symbol_names();
-                        return Err(starlark::Error::new_other(anyhow!(
-                            "Symbol '{}' not found in library '{}'. Available symbols: {}",
-                            name,
-                            resolved_path.display(),
-                            available.join(", ")
-                        )));
-                    }
-                    name
-                } else {
-                    // No specific name provided, need exactly one symbol in library
-                    let names = library.symbol_names();
-                    if names.len() == 1 {
-                        names[0].to_string()
-                    } else if names.is_empty() {
-                        return Err(starlark::Error::new_other(anyhow!(
-                            "No symbols found in library '{}'",
-                            resolved_path.display()
-                        )));
-                    } else {
-                        return Err(starlark::Error::new_other(anyhow!(
-                            "Library '{}' contains {} symbols. Please specify which one with the 'name' parameter. Available symbols: {}",
-                            resolved_path.display(),
-                            names.len(),
-                            names.join(", ")
-                        )));
-                    }
-                };
-
-                // Now get the specific symbol (this does the actual parsing + extends resolution)
-                let symbol = library
-                    .get_symbol_lazy_as_eda(&symbol_name)
-                    .map_err(|e| {
-                        starlark::Error::new_other(anyhow!(
-                            "Failed to parse symbol '{}': {}",
-                            symbol_name,
-                            e
-                        ))
-                    })?
-                    .ok_or_else(|| {
-                        starlark::Error::new_other(anyhow!(
-                            "Symbol '{}' not found in library",
-                            symbol_name
-                        ))
-                    })?;
-                (symbol_name, symbol, resolved_path.clone())
-            };
-
-            let source_uri = eval_ctx
-                .resolution()
-                .format_package_uri(&source_path)
-                .ok_or_else(|| {
-                    starlark::Error::new_other(anyhow!(
-                        "Symbol library '{}' must resolve inside a workspace or dependency package",
-                        source_path.display()
-                    ))
-                })?;
-
-            let sexpr = symbol.raw_sexp.as_ref().map(|s| {
-                pcb_sexpr::formatter::format_tree(s, pcb_sexpr::formatter::FormatMode::Normal)
-            });
-
-            let mut properties = SmallMap::new();
-            for (key, value) in &symbol.properties {
-                properties.insert(key.clone(), value.clone());
+            // Loading a symbol from a library is pure in (resolved_path, name),
+            // so the constructed value is cached on the session.
+            let cache_key = (resolved_path, name);
+            if let Some(cached) = eval_ctx.session().symbol_cache.get(&cache_key) {
+                return Ok(cached);
             }
-
-            Ok(SymbolValue::from_eda_symbol(
-                &symbol,
-                Some(source_uri),
-                sexpr,
-                properties,
-            ))
+            let value = Self::load_library_symbol(&cache_key.0, cache_key.1.clone(), eval_ctx)?;
+            eval_ctx
+                .session()
+                .symbol_cache
+                .insert(cache_key, value.clone());
+            Ok(value)
         } else {
             Err(starlark::Error::new_other(anyhow!(
                 "Symbol requires either 'definition' or 'library' parameter"
             )))
         }
+    }
+
+    /// Load a symbol from a resolved library path (a `.kicad_sym` file or a
+    /// split-library directory).
+    fn load_library_symbol(
+        resolved_path: &std::path::Path,
+        name: Option<String>,
+        eval_ctx: &EvalContext,
+    ) -> Result<SymbolValue, starlark::Error> {
+        let file_provider = eval_ctx.file_provider();
+
+        let (_symbol_name, symbol, source_path) = if file_provider.is_directory(resolved_path) {
+            load_split_library_symbol(resolved_path, name, file_provider)?
+        } else {
+            // Get or load the library (lazy - only scans for symbol names, doesn't parse them)
+            let library = get_or_load_library(resolved_path, file_provider)?;
+
+            // Determine which symbol to use
+            let symbol_name = if let Some(name) = name {
+                // Verify the symbol exists
+                if !library.has_symbol(&name) {
+                    let available: Vec<_> = library.symbol_names();
+                    return Err(starlark::Error::new_other(anyhow!(
+                        "Symbol '{}' not found in library '{}'. Available symbols: {}",
+                        name,
+                        resolved_path.display(),
+                        available.join(", ")
+                    )));
+                }
+                name
+            } else {
+                // No specific name provided, need exactly one symbol in library
+                let names = library.symbol_names();
+                if names.len() == 1 {
+                    names[0].to_string()
+                } else if names.is_empty() {
+                    return Err(starlark::Error::new_other(anyhow!(
+                        "No symbols found in library '{}'",
+                        resolved_path.display()
+                    )));
+                } else {
+                    return Err(starlark::Error::new_other(anyhow!(
+                        "Library '{}' contains {} symbols. Please specify which one with the 'name' parameter. Available symbols: {}",
+                        resolved_path.display(),
+                        names.len(),
+                        names.join(", ")
+                    )));
+                }
+            };
+
+            // Now get the specific symbol (this does the actual parsing + extends resolution)
+            let symbol = library
+                .get_symbol_lazy_as_eda(&symbol_name)
+                .map_err(|e| {
+                    starlark::Error::new_other(anyhow!(
+                        "Failed to parse symbol '{}': {}",
+                        symbol_name,
+                        e
+                    ))
+                })?
+                .ok_or_else(|| {
+                    starlark::Error::new_other(anyhow!(
+                        "Symbol '{}' not found in library",
+                        symbol_name
+                    ))
+                })?;
+            (symbol_name, symbol, resolved_path.to_path_buf())
+        };
+
+        let source_uri = eval_ctx
+            .resolution()
+            .format_package_uri(&source_path)
+            .ok_or_else(|| {
+                starlark::Error::new_other(anyhow!(
+                    "Symbol library '{}' must resolve inside a workspace or dependency package",
+                    source_path.display()
+                ))
+            })?;
+
+        let sexpr = symbol.raw_sexp.as_ref().map(|s| {
+            pcb_sexpr::formatter::format_tree(s, pcb_sexpr::formatter::FormatMode::Normal)
+        });
+
+        let mut properties = SmallMap::new();
+        for (key, value) in &symbol.properties {
+            properties.insert(key.clone(), value.clone());
+        }
+
+        Ok(SymbolValue::from_eda_symbol(
+            &symbol,
+            Some(source_uri),
+            sexpr,
+            properties,
+        ))
     }
 
     pub fn name(&self) -> Option<&str> {
@@ -384,6 +409,32 @@ impl<'v> SymbolValue {
         &self.properties
     }
 
+    pub fn internal_connectivity(&self) -> &pcb_sch::InternalConnectivity {
+        &self.internal_connectivity
+    }
+
+    pub fn explicit_jumper_signal_groups(&self) -> Vec<Vec<&str>> {
+        self.internal_connectivity
+            .groups
+            .iter()
+            .filter_map(|group| {
+                let mut signals = Vec::new();
+                let mut seen = HashSet::new();
+
+                for number in group {
+                    let Some(signal) = self.pad_to_signal.get(number) else {
+                        continue;
+                    };
+                    if seen.insert(signal.as_str()) {
+                        signals.push(signal.as_str());
+                    }
+                }
+
+                (signals.len() >= 2).then_some(signals)
+            })
+            .collect()
+    }
+
     fn from_eda_symbol(
         symbol: &pcb_eda::Symbol,
         source_uri: Option<String>,
@@ -395,7 +446,11 @@ impl<'v> SymbolValue {
             .pins
             .iter()
             .map(|pin| {
-                pad_to_signal.insert(pin.number.clone(), pin.signal_name().to_owned());
+                // First occurrence wins: repeated pin numbers are one logical
+                // terminal, and the first occurrence names its public signal.
+                if !pad_to_signal.contains_key(&pin.number) {
+                    pad_to_signal.insert(pin.number.clone(), pin.signal_name().to_owned());
+                }
                 SymbolPin {
                     name: pin.name.clone(),
                     number: pin.number.clone(),
@@ -423,6 +478,10 @@ impl<'v> SymbolValue {
             raw_sexp,
             properties,
             in_bom: symbol.in_bom,
+            internal_connectivity: pcb_sch::InternalConnectivity::new(
+                symbol.internal_connectivity.duplicate_numbers_are_jumpers,
+                symbol.internal_connectivity.groups.iter().cloned(),
+            ),
         }
     }
 }
@@ -615,30 +674,48 @@ fn get_or_load_library(
 fn resolve_symbol_library_path(
     library_path: &str,
     eval_ctx: &EvalContext,
-    current_file: &std::path::Path,
-) -> starlark::Result<std::path::PathBuf> {
-    match eval_ctx
-        .get_config()
-        .resolve_path(library_path, current_file)
-    {
-        Ok(path) => Ok(path),
-        Err(err) => {
-            let Some(stem) = library_path.strip_suffix(".kicad_sym") else {
-                return Err(starlark::Error::new_other(anyhow!(
-                    "Failed to resolve library path: {}",
-                    err
-                )));
-            };
+    current_file: &Path,
+) -> starlark::Result<PathBuf> {
+    let config = eval_ctx.get_config();
+    let file_provider = eval_ctx.file_provider();
 
-            let fallback_path = format!("{stem}.kicad_symdir");
-            eval_ctx
-                .get_config()
-                .resolve_path(&fallback_path, current_file)
-                .map_err(|_| {
-                    starlark::Error::new_other(anyhow!("Failed to resolve library path: {}", err))
-                })
+    match config.resolve_path(library_path, current_file) {
+        Ok(path) if path_exists(file_provider, &path) => Ok(path),
+        Ok(path) => Ok(existing_split_symbol_library_path(
+            library_path,
+            config,
+            current_file,
+            file_provider,
+        )
+        .unwrap_or(path)),
+        Err(err) => {
+            existing_split_symbol_library_path(library_path, config, current_file, file_provider)
+                .ok_or_else(|| unresolved_symbol_library_path(err))
         }
     }
+}
+
+fn existing_split_symbol_library_path(
+    library_path: &str,
+    config: &EvalContextConfig,
+    current_file: &Path,
+    file_provider: &dyn FileProvider,
+) -> Option<PathBuf> {
+    let stem = library_path.strip_suffix(".kicad_sym")?;
+    let split_library_path = format!("{stem}.kicad_symdir");
+    let path = config
+        .resolve_path(&split_library_path, current_file)
+        .ok()?;
+
+    path_exists(file_provider, &path).then_some(path)
+}
+
+fn path_exists(file_provider: &dyn FileProvider, path: &Path) -> bool {
+    file_provider.exists(path) || file_provider.is_directory(path)
+}
+
+fn unresolved_symbol_library_path(err: anyhow::Error) -> starlark::Error {
+    starlark::Error::new_other(anyhow!("Failed to resolve library path: {}", err))
 }
 
 fn split_library_symbol_files(
@@ -669,7 +746,7 @@ fn collect_split_library_sources(
     symbol_name: &str,
     file_provider: &dyn crate::FileProvider,
     seen: &mut HashSet<String>,
-    sources: &mut Vec<String>,
+    sources: &mut Vec<(PathBuf, String)>,
 ) -> starlark::Result<()> {
     if !seen.insert(symbol_name.to_string()) {
         return Ok(());
@@ -708,7 +785,7 @@ fn collect_split_library_sources(
         collect_split_library_sources(dir, parent_name, file_provider, seen, sources)?;
     }
 
-    sources.push(contents);
+    sources.push((symbol_path, contents));
     Ok(())
 }
 
@@ -751,7 +828,13 @@ fn load_split_library_symbol(
     let mut seen = HashSet::new();
     collect_split_library_sources(dir, &symbol_name, file_provider, &mut seen, &mut sources)?;
 
-    let library = KicadSymbolLibrary::from_sources(sources).map_err(|e| {
+    let library = KicadSymbolLibrary::from_sources(
+        sources
+            .into_iter()
+            .map(|(_, contents)| contents)
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| {
         starlark::Error::new_other(anyhow!(
             "Failed to parse symbol library {}: {}",
             dir.display(),
@@ -838,6 +921,66 @@ mod tests {
         assert_eq!(
             pin.alternates[1].graphical_style.as_deref(),
             Some("inverted")
+        );
+    }
+
+    #[test]
+    fn duplicate_pin_numbers_collapse_to_first_signal() {
+        let symbol = pcb_eda::Symbol::from_string(
+            r#"(kicad_symbol_lib
+  (version 20251024)
+  (generator "test")
+  (symbol "DuplicatePins"
+    (duplicate_pin_numbers_are_jumpers yes)
+    (symbol "DuplicatePins_1_1"
+      (pin passive line (at 0 0 0) (length 2.54) (name "A") (number "1"))
+      (pin passive line (at 0 0 0) (length 2.54) (name "B") (number "1"))
+    )
+  )
+)"#,
+            "kicad_sym",
+        )
+        .expect("symbol should parse");
+
+        let symbol_value = SymbolValue::from_eda_symbol(&symbol, None, None, SmallMap::new());
+
+        assert_eq!(
+            symbol_value.pad_to_signal().get("1").map(String::as_str),
+            Some("A")
+        );
+        assert_eq!(symbol_value.pins().len(), 2);
+        assert_eq!(symbol_value.pins()[0].name, "A");
+        assert_eq!(symbol_value.pins()[1].name, "B");
+        assert!(
+            symbol_value
+                .internal_connectivity()
+                .duplicate_numbers_are_jumpers
+        );
+    }
+
+    #[test]
+    fn explicit_jumper_groups_map_to_public_signals() {
+        let symbol = pcb_eda::Symbol::from_string(
+            r#"(kicad_symbol_lib
+  (version 20251024)
+  (generator "test")
+  (symbol "ExplicitJumpers"
+    (jumper_pin_groups ("1" "3") ("3" "99"))
+    (symbol "ExplicitJumpers_1_1"
+      (pin passive line (at 0 0 0) (length 2.54) (name "A") (number "1"))
+      (pin passive line (at 0 0 0) (length 2.54) (name "B") (number "3"))
+    )
+  )
+)"#,
+            "kicad_sym",
+        )
+        .expect("symbol should parse");
+
+        let symbol_value = SymbolValue::from_eda_symbol(&symbol, None, None, SmallMap::new());
+
+        assert_eq!(
+            symbol_value.explicit_jumper_signal_groups(),
+            vec![vec!["A", "B"]]
         );
     }
 }

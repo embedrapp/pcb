@@ -80,15 +80,32 @@ impl InstancePrefix {
     }
 }
 
-/// Return the factory of an Interface instance (handles both frozen and unfrozen)
-/// Recursively unregister all nets within an interface instance
-fn unregister_interface_nets<'v>(interface: &InterfaceValue<'v>, ctx: &ContextValue) {
-    for (_field_name, field_value) in interface.fields.iter() {
-        if let Some(net_val) = field_value.downcast_ref::<NetValue<'v>>() {
-            ctx.unregister_net(net_val.id());
-        } else if let Some(nested_interface) = field_value.downcast_ref::<InterfaceValue<'v>>() {
-            // Recursively unregister nets in nested interfaces
-            unregister_interface_nets(nested_interface, ctx);
+/// Recursively unregister nets that are owned by an interface/template expression.
+pub(crate) fn unregister_template_owned_nets<'v>(value: Value<'v>, ctx: &ContextValue) {
+    if let Some(net) = value.downcast_ref::<NetValue<'v>>() {
+        if net.is_template_owned() {
+            ctx.unregister_net(net.id());
+        }
+        return;
+    }
+
+    if let Some(net) = value.downcast_ref::<FrozenNetValue>() {
+        if net.is_template_owned() {
+            ctx.unregister_net(net.id());
+        }
+        return;
+    }
+
+    if let Some(interface) = value.downcast_ref::<InterfaceValue<'v>>() {
+        for (_field_name, field_value) in interface.fields().iter() {
+            unregister_template_owned_nets(field_value.to_value(), ctx);
+        }
+        return;
+    }
+
+    if let Some(interface) = value.downcast_ref::<FrozenInterfaceValue>() {
+        for (_field_name, field_value) in interface.fields().iter() {
+            unregister_template_owned_nets(field_value.to_value(), ctx);
         }
     }
 }
@@ -132,7 +149,6 @@ fn clone_net_template<'v>(
 
     let net_name = compute_net_name(prefix, template_name_opt.as_deref(), field_name_opt, eval);
     let cloned_net = cloned_value.downcast_ref::<NetValue<'v>>().unwrap();
-    let call_stack = eval.call_stack();
 
     let final_name = if should_register {
         eval.module()
@@ -143,8 +159,7 @@ fn clone_net_template<'v>(
                     cloned_net.id(),
                     &net_name,
                     prefix.assignment_inferable,
-                    &cloned_net.type_name,
-                    call_stack.clone(),
+                    cloned_net.net_kind_name(),
                 )
             })
             .transpose()?
@@ -159,16 +174,15 @@ fn clone_net_template<'v>(
         template_name: cloned_net.template_name_opt().map(str::to_owned),
         original_name: cloned_net.original_name_opt().map(|s| s.to_owned()),
         assignment_inferable: prefix.assignment_inferable,
-        derived_from_base_net: cloned_net.derived_from_base_net(),
         was_bound: cloned_net.cloned_bound_marker(),
         inferred_name: OnceLock::new(),
-        inferred_original_name: OnceLock::new(),
         declaration_path: cloned_net
             .declaration_path()
             .unwrap_or_default()
             .to_string(),
         declaration_span: cloned_net.declaration_span(),
         type_name: cloned_net.type_name.clone(),
+        connection_intent: cloned_net.connection_intent,
         properties: cloned_net.properties().clone(),
     });
     cloned_nets.insert(source_id, cloned_net);
@@ -778,31 +792,12 @@ pub(crate) fn interface_globals(builder: &mut GlobalsBuilder) {
                         .downcast_ref::<FrozenInterfaceFactory>()
                         .is_some()
                 {
-                    // If a Net instance literal was provided as a template field,
-                    // unregister it from the current module so it does not count as
-                    // an introduced net of this module. It will be (re)registered
-                    // when an interface instance is created.
-                    if type_str == "Net" {
-                        if let Some(net_val) = field_value.downcast_ref::<NetValue<'v>>()
-                            && let Some(ctx) = eval
-                                .module()
-                                .extra_value()
-                                .and_then(|e| e.downcast_ref::<ContextValue>())
-                        {
-                            ctx.unregister_net(net_val.id());
-                        }
-                    } else if type_str == "InterfaceValue" {
-                        // If an Interface instance was provided as a template field,
-                        // recursively unregister all nets inside it
-                        if let Some(interface_val) =
-                            field_value.downcast_ref::<InterfaceValue<'v>>()
-                            && let Some(ctx) = eval
-                                .module()
-                                .extra_value()
-                                .and_then(|e| e.downcast_ref::<ContextValue>())
-                        {
-                            unregister_interface_nets(interface_val, ctx);
-                        }
+                    if let Some(ctx) = eval
+                        .module()
+                        .extra_value()
+                        .and_then(|e| e.downcast_ref::<ContextValue>())
+                    {
+                        unregister_template_owned_nets(field_value, ctx);
                     }
                     fields.insert(name.clone(), field_value);
                 } else {

@@ -20,7 +20,7 @@ pub mod natural_string;
 pub mod physical;
 pub mod position;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
@@ -44,6 +44,10 @@ pub const ATTR_LAYOUT_HINTS: &str = "layout_hints";
 
 /// URI prefix for stable, machine-independent package references.
 pub const PACKAGE_URI_PREFIX: &str = "package://";
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 
 /// Resolve a `package://` URI to an absolute filesystem path.
 ///
@@ -86,13 +90,18 @@ pub fn format_package_uri(abs: &Path, package_roots: &BTreeMap<String, PathBuf>)
                 .then_some((coord.as_str(), root.as_path()))
         })
         .max_by_key(|(_, root)| root.as_os_str().len())?;
-    let rel = abs.strip_prefix(pkg_root).ok()?;
+    package_uri(pkg_url, abs.strip_prefix(pkg_root).ok()?)
+}
+
+/// Format a `package://` URI from a package coordinate and a path relative to
+/// the package root.
+pub fn package_uri(coord: &str, rel: &Path) -> Option<String> {
     let rel_str = rel.to_str()?;
     if rel_str.is_empty() {
-        Some(format!("{PACKAGE_URI_PREFIX}{pkg_url}"))
+        Some(format!("{PACKAGE_URI_PREFIX}{coord}"))
     } else {
         let rel_str = rel_str.replace('\\', "/");
-        Some(format!("{PACKAGE_URI_PREFIX}{pkg_url}/{rel_str}"))
+        Some(format!("{PACKAGE_URI_PREFIX}{coord}/{rel_str}"))
     }
 }
 
@@ -152,13 +161,15 @@ mod refdes_alloc {
     }
 
     fn parse_hint(s: &str) -> Option<ParsedRefdes> {
-        // Hint format is intentionally strict: 1-3 uppercase letters + 1-3 digits.
-        if !(2..=6).contains(&s.len()) {
+        // Hint format is intentionally strict: 1-3 uppercase letters + 1-4 digits.
+        // 4 digits covers 1000-series refdes (e.g. J1000, R1500, LED1001) that are
+        // common on large boards; longer numbers stay out of the fuzzy-hint path.
+        if !(2..=7).contains(&s.len()) {
             return None;
         }
         let first_digit = s.find(|c: char| c.is_ascii_digit())?;
         let (prefix, digits) = s.split_at(first_digit);
-        if !(1..=3).contains(&prefix.len()) || !(1..=3).contains(&digits.len()) {
+        if !(1..=3).contains(&prefix.len()) || !(1..=4).contains(&digits.len()) {
             return None;
         }
         if !is_known_prefix(prefix) {
@@ -464,6 +475,48 @@ impl AttributeValue {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InternalConnectivity {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub duplicate_numbers_are_jumpers: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<BTreeSet<String>>,
+}
+
+impl InternalConnectivity {
+    /// Build normalized internal connectivity: singleton groups are dropped,
+    /// overlapping groups are merged, and the group list is sorted.
+    pub fn new(
+        duplicate_numbers_are_jumpers: bool,
+        groups: impl IntoIterator<Item = BTreeSet<String>>,
+    ) -> Self {
+        let mut normalized: Vec<BTreeSet<String>> = Vec::new();
+        for mut group in groups {
+            if group.len() < 2 {
+                continue;
+            }
+            // Groups already in `normalized` are pairwise disjoint, so merging
+            // everything that overlaps the incoming group preserves that invariant.
+            let (overlapping, disjoint): (Vec<_>, Vec<_>) = normalized
+                .into_iter()
+                .partition(|existing| !existing.is_disjoint(&group));
+            group.extend(overlapping.into_iter().flatten());
+            normalized = disjoint;
+            normalized.push(group);
+        }
+        normalized.sort();
+
+        Self {
+            duplicate_numbers_are_jumpers,
+            groups: normalized,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.duplicate_numbers_are_jumpers && self.groups.is_empty()
+    }
+}
+
 impl From<String> for AttributeValue {
     fn from(s: String) -> Self {
         AttributeValue::String(s)
@@ -486,6 +539,8 @@ pub struct Instance {
     pub attributes: HashMap<Symbol, AttributeValue>,
     pub children: HashMap<Symbol, InstanceRef>,
     pub reference_designator: Option<String>,
+    #[serde(default, skip_serializing_if = "InternalConnectivity::is_empty")]
+    pub internal_connectivity: InternalConnectivity,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub symbol_positions: HashMap<String, Position>,
 }
@@ -498,6 +553,7 @@ impl Instance {
             attributes: HashMap::new(),
             children: HashMap::new(),
             reference_designator: None,
+            internal_connectivity: InternalConnectivity::default(),
             symbol_positions: HashMap::new(),
         }
     }
@@ -697,10 +753,6 @@ pub struct Schematic {
     /// to absolute filesystem path.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub package_roots: BTreeMap<String, PathBuf>,
-
-    /// Files resolved during evaluation (runtime-only; not serialized).
-    #[serde(skip)]
-    pub resolved_paths: Vec<PathBuf>,
 }
 
 impl Schematic {
@@ -712,11 +764,7 @@ impl Schematic {
     /// Serialize the schematic to canonical (deterministic) JSON string.
     /// Uses RFC 8785 canonical JSON format with sorted keys.
     pub fn to_json(&self) -> anyhow::Result<String> {
-        let mut buf = Vec::new();
-        let mut ser =
-            serde_json::Serializer::with_formatter(&mut buf, canon_json::CanonicalFormatter::new());
-        serde::Serialize::serialize(self, &mut ser)?;
-        Ok(String::from_utf8(buf)?)
+        Ok(serde_jcs::to_string(self)?)
     }
 
     /// Insert (or replace) an instance.
@@ -1316,6 +1364,68 @@ mod tests {
     }
 
     #[test]
+    fn assign_refdes_honors_four_digit_hint() {
+        let mut schematic = Schematic::new();
+        let mod_ref = ModuleRef::from_path(Path::new("/test.pmod"), "TestModule");
+
+        // 1000-series refdes carried as an instance name (non-leaf hint).
+        for name in ["R1000", "R1500", "R9999"] {
+            let r_ref = InstanceRef::new(mod_ref.clone(), vec![name.into(), "R".into()]);
+            let r = Instance::component(mod_ref.clone()).with_attribute("type", "res".to_string());
+            schematic.add_instance(r_ref, r);
+        }
+
+        // Multi-letter known prefix + 4 digits (7 chars): must clear the length gate.
+        let led_ref = InstanceRef::new(mod_ref.clone(), vec!["LED1001".into(), "D".into()]);
+        let led = Instance::component(mod_ref.clone()).with_attribute("prefix", "LED".to_string());
+        schematic.add_instance(led_ref.clone(), led);
+
+        let ref_map = schematic.assign_reference_designators();
+
+        for name in ["R1000", "R1500", "R9999"] {
+            let r_ref = InstanceRef::new(mod_ref.clone(), vec![name.into(), "R".into()]);
+            assert_eq!(ref_map.get(&r_ref), Some(&name.to_string()));
+        }
+        assert_eq!(ref_map.get(&led_ref), Some(&"LED1001".to_string()));
+    }
+
+    #[test]
+    fn assign_refdes_four_digit_hint_avoids_collision() {
+        let mut schematic = Schematic::new();
+        let mod_ref = ModuleRef::from_path(Path::new("/test.pmod"), "TestModule");
+
+        // Explicit 1000-series hint plus an unnamed resistor: the auto-numberer
+        // must not collide with the honored R1000.
+        let named_ref = InstanceRef::new(mod_ref.clone(), vec!["R1000".into(), "R".into()]);
+        let named = Instance::component(mod_ref.clone()).with_attribute("type", "res".to_string());
+        schematic.add_instance(named_ref.clone(), named);
+
+        let auto_ref = InstanceRef::new(mod_ref.clone(), vec!["z".into()]);
+        let auto = Instance::component(mod_ref.clone()).with_attribute("type", "res".to_string());
+        schematic.add_instance(auto_ref.clone(), auto);
+
+        let ref_map = schematic.assign_reference_designators();
+        assert_eq!(ref_map.get(&named_ref), Some(&"R1000".to_string()));
+        let auto = ref_map.get(&auto_ref).unwrap();
+        assert_ne!(auto, "R1000");
+        assert!(auto.starts_with('R'));
+    }
+
+    #[test]
+    fn assign_refdes_five_digit_hint_not_honored() {
+        let mut schematic = Schematic::new();
+        let mod_ref = ModuleRef::from_path(Path::new("/test.pmod"), "TestModule");
+
+        // 5+ digit numbers stay out of the fuzzy-hint path (auto-numbered instead).
+        let r_ref = InstanceRef::new(mod_ref.clone(), vec!["R12345".into(), "R".into()]);
+        let r = Instance::component(mod_ref.clone()).with_attribute("type", "res".to_string());
+        schematic.add_instance(r_ref.clone(), r);
+
+        let ref_map = schematic.assign_reference_designators();
+        assert_eq!(ref_map.get(&r_ref), Some(&"R1".to_string()));
+    }
+
+    #[test]
     fn assign_refdes_ignores_leaf_hint() {
         let mut schematic = Schematic::new();
         let mod_ref = ModuleRef::from_path(Path::new("/test.pmod"), "TestModule");
@@ -1446,5 +1556,29 @@ mod tests {
         assert_ne!(a, "R22");
         assert_ne!(b, "R22");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn internal_connectivity_normalizes_groups() {
+        let connectivity = InternalConnectivity::new(
+            false,
+            [
+                ["3", "1"].into_iter().map(String::from).collect(),
+                ["3", "4"].into_iter().map(String::from).collect(),
+                ["2", "2"].into_iter().map(String::from).collect(),
+            ],
+        );
+
+        let expected: BTreeSet<String> = ["1", "3", "4"].into_iter().map(String::from).collect();
+        assert_eq!(connectivity.groups, vec![expected]);
+    }
+
+    #[test]
+    fn internal_connectivity_empty_ignores_singleton_groups() {
+        let connectivity =
+            InternalConnectivity::new(false, [["2", "2"].into_iter().map(String::from).collect()]);
+
+        assert!(connectivity.is_empty());
+        assert!(connectivity.groups.is_empty());
     }
 }

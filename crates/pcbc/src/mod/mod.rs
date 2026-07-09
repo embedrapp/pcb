@@ -7,12 +7,13 @@ use clap::Args;
 use pcb_zen::WorkspaceInfo;
 use pcb_zen::cache_index::{CacheIndex, ensure_workspace_cache_symlink};
 use pcb_zen::package_resolver::{
-    DepGraph, DepGraphNode, PackageResolver, build_frozen_resolution_maps,
-    target_package_urls_for_path, vendor_selected,
+    DepGraph, DepGraphNode, PackageResolver, build_frozen_resolution_maps, plan_vendor_selected,
+    target_package_urls_for_path,
 };
+use pcb_zen::resolve::VendorPlan;
 use pcb_zen::resolve::ensure_package_manifest_in_cache;
 use pcb_zen::tags;
-use pcb_zen::workspace::get_workspace_info;
+use pcb_zen::workspace::{enrich_tag_versions, get_workspace_info};
 use pcb_zen_core::DefaultFileProvider;
 use pcb_zen_core::config::{DependencySpec, PcbToml};
 use pcb_zen_core::is_stdlib_module_path;
@@ -22,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use self::request::resolve_direct_dependency_request;
 use self::target::{AddTarget, discover_add_targets, discover_package_target};
-use self::writeback::write_package_manifest;
+use self::writeback::{ManifestEdit, plan_package_manifest};
 
 type DirectOverrides = BTreeMap<String, DependencySpec>;
 
@@ -45,9 +46,10 @@ pub struct SyncArgs {
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
 
-    /// Do not use the network; only use already cached package data
-    #[arg(long = "offline")]
-    pub offline: bool,
+    /// Verify pcb.toml and vendor/ are in sync across the whole workspace
+    /// without modifying them; exit non-zero on drift
+    #[arg(long = "check")]
+    pub check: bool,
 }
 
 #[derive(Args, Debug)]
@@ -72,17 +74,25 @@ pub struct ModWhyArgs {
 pub struct ModGraphArgs {}
 
 #[derive(Args, Debug)]
-#[command(about = "Print the frozen MVS v2 resolution table for a target")]
+#[command(about = "Print the frozen dependency resolution table for a target")]
 pub struct ModResolveArgs {
     /// .zen file or directory to resolve. Defaults to current directory.
     #[arg(value_name = "PATH", value_hint = clap::ValueHint::AnyPath)]
     pub path: Option<PathBuf>,
 }
 
+/// Load and validate the workspace for `pcb mod` / `pcb sync`, with package
+/// versions from git tags: they feed the workspace pins written to pcb.toml.
+fn load_workspace(start_path: &Path) -> Result<WorkspaceInfo> {
+    let mut workspace = get_workspace_info(&DefaultFileProvider::new(), start_path)?;
+    enrich_tag_versions(&mut workspace);
+    validate_workspace(&workspace)?;
+    Ok(workspace)
+}
+
 pub fn execute_mod_add(args: ModAddArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let workspace = get_workspace_info(&DefaultFileProvider::new(), &cwd)?;
-    validate_workspace(&workspace)?;
+    let workspace = load_workspace(&cwd)?;
 
     let Some(target) = discover_package_target(&workspace, &cwd) else {
         bail!("must be run from a package directory.");
@@ -95,7 +105,7 @@ pub fn execute_mod_add(args: ModAddArgs) -> Result<()> {
         false,
         Some((&target.package_url, &overrides)),
         false,
-        false,
+        SyncMode::Write,
     )
 }
 
@@ -105,55 +115,29 @@ pub fn execute_sync(args: SyncArgs) -> Result<()> {
 }
 
 pub(crate) fn execute_sync_from(cwd: &Path, args: SyncArgs) -> Result<()> {
-    let workspace = get_workspace_info(&DefaultFileProvider::new(), cwd)?;
-    cleanup_deprecated_workspace_members(&workspace, args.verbose)?;
-    validate_workspace(&workspace)?;
+    let workspace = load_workspace(cwd)?;
 
-    let targets = discover_add_targets(&workspace, cwd)?;
-    sync_targets(
+    // --check always verifies the whole workspace, regardless of cwd.
+    let scope = if args.check { &workspace.root } else { cwd };
+    let targets = discover_add_targets(&workspace, scope)?;
+    let mode = if args.check {
+        SyncMode::Check
+    } else {
+        SyncMode::Write
+    };
+    run_resolution(
         &workspace,
         &targets,
         args.verbose,
-        is_workspace_root(&workspace, cwd),
-        args.offline,
+        None,
+        is_workspace_root(&workspace, scope),
+        mode,
     )
-}
-
-fn cleanup_deprecated_workspace_members(workspace: &WorkspaceInfo, verbose: bool) -> Result<()> {
-    let Some(config) = workspace.config.as_ref().filter(|config| {
-        config
-            .workspace
-            .as_ref()
-            .is_some_and(|workspace| !workspace.members.is_empty())
-    }) else {
-        return Ok(());
-    };
-
-    let pcb_toml_path = workspace.root.join("pcb.toml");
-    if !pcb_toml_path.exists() {
-        return Ok(());
-    }
-
-    let mut rendered = toml::to_string_pretty(&config)?;
-    if !rendered.ends_with('\n') {
-        rendered.push('\n');
-    }
-    std::fs::write(&pcb_toml_path, rendered)?;
-
-    if verbose {
-        println!(
-            "pcb: updated {}",
-            workspace_relative_path(&workspace.root, &pcb_toml_path).display()
-        );
-    }
-
-    Ok(())
 }
 
 pub fn execute_mod_download(args: ModDownloadArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let workspace = get_workspace_info(&DefaultFileProvider::new(), &cwd)?;
-    validate_workspace(&workspace)?;
+    let workspace = load_workspace(&cwd)?;
     ensure_workspace_cache_symlink(&workspace.root)?;
 
     if let Some(dependency) = args.dependency {
@@ -201,8 +185,7 @@ pub fn execute_mod_graph(_args: ModGraphArgs) -> Result<()> {
 pub fn execute_mod_resolve(args: ModResolveArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let path = args.path.as_deref().unwrap_or(&cwd);
-    let workspace = get_workspace_info(&DefaultFileProvider::new(), path)?;
-    validate_workspace(&workspace)?;
+    let workspace = load_workspace(path)?;
 
     let package_urls = target_package_urls_for_path(&workspace, path)?;
     let resolutions = build_frozen_resolution_maps(&workspace, package_urls.clone(), false)?;
@@ -225,8 +208,7 @@ fn load_target_manifest(target: &AddTarget) -> Result<PcbToml> {
 
 fn load_single_target_workspace(command_name: &str) -> Result<(WorkspaceInfo, AddTarget)> {
     let cwd = std::env::current_dir()?;
-    let workspace = get_workspace_info(&DefaultFileProvider::new(), &cwd)?;
-    validate_workspace(&workspace)?;
+    let workspace = load_workspace(&cwd)?;
 
     let Some(target) = discover_package_target(&workspace, &cwd) else {
         bail!("`{command_name}` must be run from a package directory, not the workspace root.");
@@ -235,7 +217,7 @@ fn load_single_target_workspace(command_name: &str) -> Result<(WorkspaceInfo, Ad
 }
 
 fn build_target_graph(workspace: &WorkspaceInfo, target: &AddTarget) -> Result<DepGraph> {
-    let mut resolver = PackageResolver::new(workspace.clone(), false)?;
+    let mut resolver = PackageResolver::new(workspace.clone())?;
     resolver.build_package_graph(&target.package_url)
 }
 
@@ -325,14 +307,6 @@ fn is_remote_dependency(
         && !workspace.packages.contains_key(module_path)
         && workspace.workspace_base_url().as_deref() != Some(module_path)
         && !matches!(spec, DependencySpec::Detailed(detail) if detail.path.is_some())
-        && !is_configured_kicad_repo(workspace, module_path)
-}
-
-pub(crate) fn is_configured_kicad_repo(workspace: &WorkspaceInfo, module_path: &str) -> bool {
-    workspace
-        .kicad_library_entries()
-        .iter()
-        .any(|entry| entry.repo_urls().any(|repo| repo == module_path))
 }
 
 fn parse_download_dependency(raw: &str) -> Result<(String, semver::Version)> {
@@ -443,9 +417,21 @@ pub(crate) fn sync_targets(
     targets: &[AddTarget],
     verbose: bool,
     prune_vendor: bool,
-    offline: bool,
 ) -> Result<()> {
-    run_resolution(workspace, targets, verbose, None, prune_vendor, offline)
+    run_resolution(
+        workspace,
+        targets,
+        verbose,
+        None,
+        prune_vendor,
+        SyncMode::Write,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncMode {
+    Write,
+    Check,
 }
 
 fn run_resolution(
@@ -454,11 +440,11 @@ fn run_resolution(
     verbose: bool,
     direct_overrides: Option<(&str, &DirectOverrides)>,
     prune_vendor: bool,
-    offline: bool,
+    mode: SyncMode,
 ) -> Result<()> {
-    ensure_workspace_cache_symlink(&workspace.root)?;
-    let mut resolver = PackageResolver::new(workspace.clone(), offline)?;
+    let mut resolver = PackageResolver::new(workspace.clone())?;
     let mut selected_remote = BTreeSet::new();
+    let mut manifest_edits = Vec::new();
 
     for target in targets {
         let overrides = direct_overrides
@@ -466,12 +452,8 @@ fn run_resolution(
             .map(|(_, overrides)| overrides);
         let resolution =
             resolver.resolve_package_with_direct_overrides(&target.package_url, overrides)?;
-        let summary = write_package_manifest(target, &resolution)?;
-        if verbose && summary.changed {
-            println!(
-                "pcb: updated {}",
-                workspace_relative_path(&workspace.root, &target.pcb_toml_path).display()
-            );
+        if let Some(edit) = plan_package_manifest(target, &resolution)? {
+            manifest_edits.push(edit);
         }
         selected_remote.extend(resolution.resolved_remote);
     }
@@ -481,9 +463,62 @@ fn run_resolution(
             .iter()
             .map(|(dep_id, version)| (dep_id, version)),
     )?;
-    vendor_selected(workspace, &package_roots, prune_vendor)?;
+    let vendor_plan = plan_vendor_selected(workspace, &package_roots, prune_vendor)?;
 
+    match mode {
+        SyncMode::Write => apply_sync_plan(workspace, manifest_edits, vendor_plan, verbose),
+        SyncMode::Check => report_sync_drift(workspace, &manifest_edits, &vendor_plan),
+    }
+}
+
+fn apply_sync_plan(
+    workspace: &WorkspaceInfo,
+    manifest_edits: Vec<ManifestEdit>,
+    vendor_plan: VendorPlan,
+    verbose: bool,
+) -> Result<()> {
+    for edit in manifest_edits {
+        edit.apply()?;
+        if verbose {
+            println!(
+                "pcb: updated {}",
+                workspace_relative_path(&workspace.root, &edit.path).display()
+            );
+        }
+    }
+    vendor_plan.apply()?;
     Ok(())
+}
+
+fn report_sync_drift(
+    workspace: &WorkspaceInfo,
+    manifest_edits: &[ManifestEdit],
+    vendor_plan: &VendorPlan,
+) -> Result<()> {
+    if manifest_edits.is_empty() && vendor_plan.is_empty() {
+        return Ok(());
+    }
+
+    for edit in manifest_edits {
+        eprintln!(
+            "would update {}",
+            workspace_relative_path(&workspace.root, &edit.path).display()
+        );
+    }
+    for copy in &vendor_plan.copies {
+        eprintln!(
+            "would vendor {}",
+            workspace_relative_path(&workspace.root, &copy.dst).display()
+        );
+    }
+    for prune in &vendor_plan.prunes {
+        eprintln!(
+            "would prune {}",
+            workspace_relative_path(&workspace.root, prune).display()
+        );
+    }
+
+    bail!("workspace is not synced; run `pcb sync` and commit the changes")
 }
 
 pub(crate) fn validate_workspace(workspace: &WorkspaceInfo) -> Result<()> {

@@ -1,4 +1,4 @@
-use super::Units;
+use super::{Units, UserPrimitive};
 use crate::Symbol;
 use std::collections::HashMap;
 
@@ -20,6 +20,8 @@ pub struct CadHeader {
 #[derive(Debug, Clone)]
 pub struct Spec {
     pub name: Symbol,
+    /// Typed child elements exactly as carried by the IPC Spec payload.
+    pub items: Vec<SpecItem>,
     pub material: Option<Symbol>,
     pub dielectric_constant: Option<f64>,
     pub loss_tangent: Option<f64>,
@@ -33,6 +35,36 @@ pub struct Spec {
     pub color_term: Option<Symbol>,
     /// RGB color specified via Color element (r, g, b values 0-255)
     pub color_rgb: Option<(u8, u8, u8)>,
+}
+
+/// A child item inside a CadHeader Spec.
+#[derive(Debug, Clone)]
+pub struct SpecItem {
+    pub element: Symbol,
+    pub kind: SpecItemKind,
+    pub item_type: Option<Symbol>,
+    pub comment: Option<Symbol>,
+    pub properties: Vec<SpecProperty>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecItemKind {
+    General,
+    Dielectric,
+    Conductor,
+    SurfaceFinish,
+    VCut,
+    Other,
+}
+
+#[derive(Debug, Clone)]
+pub struct SpecProperty {
+    pub value: Option<f64>,
+    pub text: Option<Symbol>,
+    pub unit: Option<Symbol>,
+    pub plus_tol: Option<f64>,
+    pub minus_tol: Option<f64>,
+    pub tol_percent: Option<bool>,
 }
 
 /// Ecad section containing CadHeader and CadData
@@ -182,17 +214,35 @@ pub struct Package {
 /// Component instance on the board
 #[derive(Debug, Clone)]
 pub struct Component {
-    pub ref_des: Symbol,
-    pub package_ref: Symbol,
+    pub ref_des: Option<Symbol>,
+    pub package_ref: Option<Symbol>,
+    pub mat_des: Option<Symbol>,
     pub layer_ref: Symbol,
-    pub mount_type: Option<MountType>,
-    pub part: Option<Symbol>,
+    pub layer_ref_topside: Option<Symbol>,
+    pub mount_type: MountType,
+    pub part: Symbol,
+    pub model_ref: Option<Symbol>,
+    pub weight: Option<f64>,
+    pub height: Option<f64>,
+    pub standoff: Option<f64>,
+    pub location: super::Location,
+    pub xform: Option<super::Xform>,
+    pub nonstandard_attributes: Vec<NonstandardAttribute>,
+    pub slot_cavity_ref: Option<Symbol>,
+    pub spec_refs: Vec<Symbol>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MountType {
     Smt,
-    Tht,
+    Thmt,
+    Embedded,
+    PressFit,
+    WireBonded,
+    Glued,
+    Clamped,
+    Socketed,
+    Formed,
     Other,
 }
 
@@ -206,8 +256,9 @@ pub struct LogicalNet {
 /// PinRef references a component pin
 #[derive(Debug, Clone)]
 pub struct PinRef {
-    pub component_ref: Symbol,
+    pub component_ref: Option<Symbol>,
     pub pin: Symbol,
+    pub title: Option<Symbol>,
 }
 
 /// PhyNetGroup contains physical net routing data
@@ -224,6 +275,7 @@ pub struct Layer {
     pub side: Option<Side>,
     pub polarity: Option<Polarity>,
     pub span: Option<LayerSpan>,
+    pub spec_refs: Vec<Symbol>,
     pub profile: Option<Profile>, // Layer-specific outline (for rigid-flex)
 }
 
@@ -246,15 +298,67 @@ pub struct FeatureSet {
     pub net: Option<Symbol>,      // Net name from Set element
     pub geometry: Option<Symbol>, // Reference to PadStackDef or other geometry definition
     pub polarity: Option<Polarity>,
+    pub spec_refs: Vec<Symbol>,
     pub features: Vec<SetFeature>,
-    pub holes: Vec<Hole>,
-    pub slots: Vec<Slot>,
-    pub pads: Vec<Pad>,
-    pub traces: Vec<Trace>,
-    pub polygons: Vec<super::Polygon>, // Copper pours from Features
-    pub lines: Vec<Line>,              // Trace lines from Features > UserSpecial > Line
-    pub polylines: Vec<FeaturePolyline>,
     pub nonstandard_attributes: Vec<NonstandardAttribute>,
+}
+
+impl FeatureSet {
+    pub fn holes(&self) -> impl Iterator<Item = &Hole> {
+        self.features.iter().filter_map(|feature| match feature {
+            SetFeature::Hole(hole) => Some(hole),
+            _ => None,
+        })
+    }
+
+    pub fn slots(&self) -> impl Iterator<Item = &Slot> {
+        self.features.iter().filter_map(|feature| match feature {
+            SetFeature::Slot(slot) => Some(slot),
+            _ => None,
+        })
+    }
+
+    pub fn pads(&self) -> impl Iterator<Item = &Pad> {
+        self.features.iter().filter_map(|feature| match feature {
+            SetFeature::Pad(pad) => Some(pad),
+            _ => None,
+        })
+    }
+
+    pub fn fiducials(&self) -> impl Iterator<Item = &Fiducial> {
+        self.features.iter().filter_map(|feature| match feature {
+            SetFeature::Fiducial(fiducial) => Some(fiducial),
+            _ => None,
+        })
+    }
+
+    pub fn traces(&self) -> impl Iterator<Item = &Trace> {
+        self.features.iter().filter_map(|feature| match feature {
+            SetFeature::Trace(trace) => Some(trace),
+            _ => None,
+        })
+    }
+
+    pub fn polygons(&self) -> impl Iterator<Item = &super::Polygon> {
+        self.features.iter().filter_map(|feature| match feature {
+            SetFeature::Polygon(polygon) => Some(polygon),
+            _ => None,
+        })
+    }
+
+    pub fn lines(&self) -> impl Iterator<Item = &Line> {
+        self.features.iter().filter_map(|feature| match feature {
+            SetFeature::Line(line) => Some(line),
+            _ => None,
+        })
+    }
+
+    pub fn polylines(&self) -> impl Iterator<Item = &FeaturePolyline> {
+        self.features.iter().filter_map(|feature| match feature {
+            SetFeature::Polyline(polyline) => Some(polyline),
+            _ => None,
+        })
+    }
 }
 
 /// Geometry-bearing children of a Set in source document order.
@@ -263,13 +367,47 @@ pub enum SetFeature {
     Hole(Hole),
     Slot(Slot),
     Pad(Pad),
+    Fiducial(Fiducial),
     Trace(Trace),
+    UserPrimitive(FeatureUserPrimitive),
     Polygon(super::Polygon),
     Line(Line),
     Arc(FeatureArc),
     Polyline(FeaturePolyline),
     StandardPrimitiveRef(FeaturePrimitiveRef),
     UserPrimitiveRef(FeaturePrimitiveRef),
+}
+
+/// Inline user primitive feature carried directly by a Features block.
+#[derive(Debug, Clone)]
+pub struct FeatureUserPrimitive {
+    pub primitive: UserPrimitive,
+    pub x: f64,
+    pub y: f64,
+}
+
+/// IPC fiducial and panel mark feature carried by a Set.
+#[derive(Debug, Clone)]
+pub struct Fiducial {
+    pub kind: FiducialKind,
+    pub location: super::Location,
+    pub xform: Option<super::Xform>,
+    pub shape: FiducialShape,
+    pub pin_ref: Option<PinRef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FiducialKind {
+    BadBoardMark,
+    Global,
+    GoodPanelMark,
+    Local,
+}
+
+#[derive(Debug, Clone)]
+pub enum FiducialShape {
+    Primitive(super::StandardPrimitive),
+    StandardPrimitiveRef(Symbol),
 }
 
 /// NonstandardAttribute from Set elements
@@ -290,6 +428,7 @@ pub struct Line {
     pub line_desc_ref: Option<Symbol>,
     pub line_width: f64,
     pub line_end: Option<super::LineEnd>,
+    pub line_property: Option<super::LineProperty>,
 }
 
 /// Open polyline feature preserving straight and curved PolyStep order.
@@ -300,6 +439,7 @@ pub struct FeaturePolyline {
     pub line_desc_ref: Option<Symbol>,
     pub line_width: f64,
     pub line_end: Option<super::LineEnd>,
+    pub line_property: Option<super::LineProperty>,
 }
 
 /// Arc feature preserving center and direction.
@@ -312,6 +452,7 @@ pub struct FeatureArc {
     pub line_desc_ref: Option<Symbol>,
     pub line_width: f64,
     pub line_end: Option<super::LineEnd>,
+    pub line_property: Option<super::LineProperty>,
 }
 
 /// Primitive reference used directly as feature geometry.
@@ -352,6 +493,7 @@ pub struct Slot {
     pub shape: SlotShape,
     pub plating_status: PlatingStatus,
     pub z_axis_dim: bool,
+    pub xform: Option<super::Xform>,
     pub x: f64,
     pub y: f64,
 }
@@ -367,6 +509,7 @@ pub struct Pad {
     pub standard_primitive_ref: Option<Symbol>,
     /// Inline user primitive override (takes precedence over padstack definition)
     pub user_primitive_ref: Option<Symbol>,
+    pub pin_ref: Option<PinRef>,
 }
 
 /// Trace represents a copper trace or line on a layer

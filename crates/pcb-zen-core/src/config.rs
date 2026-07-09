@@ -3,47 +3,27 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use ariadne::{Label, Report, ReportKind, Source};
-use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::FileProvider;
 
 /// Top-level pcb.toml configuration.
-///
-/// The toolchain only supports V2 manifests. Some legacy V1 fields still exist here so `pcb migrate`
-/// can parse and upgrade older projects, but V1 dependency resolution is not supported at runtime.
-///
-/// `is_v2()` is used to detect whether a manifest is V2-compatible (and to detect legacy V1 inputs).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PcbToml {
     /// Workspace configuration section
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceConfig>,
 
-    /// Module configuration section (legacy V1; used by `pcb migrate` only)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub module: Option<ModuleConfig>,
-
     /// Board configuration section
     #[serde(skip_serializing_if = "Option::is_none")]
     pub board: Option<Board>,
 
-    /// Package aliases configuration section (legacy V1; used by `pcb migrate` only)
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub packages: HashMap<String, String>,
-
-    /// Dependencies (V2 only - code packages with pcb.toml)
+    /// Code package dependencies.
     #[serde(default, skip_serializing_if = "DependencyTable::is_empty")]
     pub dependencies: DependencyTable,
 
-    /// Legacy assets section (V2).
-    ///
-    /// Parsed for backwards compatibility with old manifests.
-    /// Runtime behavior is limited to using matching KiCad asset paths as version hints.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub assets: BTreeMap<String, AssetDependencySpec>,
-
-    /// Patches for local development (V2 only)
+    /// Patches for local development.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub patch: BTreeMap<String, PatchSpec>,
 
@@ -62,9 +42,8 @@ pub struct PcbToml {
 /// Dependency tables stored under `[dependencies]` and `[dependencies.indirect]`.
 ///
 /// Existing runtime behavior only consumes the direct dependency map. The nested
-/// indirect table is additive plumbing for MVS v2 and is ignored by current build
-/// resolution. Direct keys stay bare module paths; indirect keys may be
-/// lane-qualified as `<module>@<lane>`.
+/// indirect table is hydrated by `pcb sync`. Direct keys stay bare module paths;
+/// indirect keys may be lane-qualified as `<module>@<lane>`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DependencyTable {
     /// Direct dependencies under `[dependencies]`.
@@ -73,8 +52,9 @@ pub struct DependencyTable {
 
     /// Tool-managed transitive dependency closure under `[dependencies.indirect]`.
     ///
-    /// MVS v2 should write exact version entries here, but we reuse `DependencySpec`
-    /// so both dependency tables share the same manifest encoding.
+    /// `pcb sync` writes exact version entries here, but we reuse
+    /// `DependencySpec` so both dependency tables share the same manifest
+    /// encoding.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub indirect: BTreeMap<String, DependencySpec>,
 }
@@ -83,20 +63,13 @@ impl DependencyTable {
     pub fn is_empty(&self) -> bool {
         self.direct.is_empty() && self.indirect.is_empty()
     }
-}
 
-fn asset_targets_repo(asset_key: &str, repo: &str) -> bool {
-    asset_key == repo
-        || (asset_key.starts_with(repo) && asset_key.as_bytes().get(repo.len()) == Some(&b'/'))
-}
-
-fn parse_asset_semver(spec: &AssetDependencySpec) -> Option<Version> {
-    let raw = match spec {
-        AssetDependencySpec::Ref(v) => Some(v.as_str()),
-        AssetDependencySpec::Detailed(d) => d.version.as_deref(),
-    }?;
-    let raw = raw.strip_prefix('v').unwrap_or(raw);
-    Version::parse(raw).ok()
+    fn remove_kicad_library_dependencies(&mut self) {
+        self.direct
+            .retain(|path, _| !crate::is_kicad_library_package(path));
+        self.indirect
+            .retain(|key, _| !crate::is_kicad_library_dependency_key(key));
+    }
 }
 
 /// Parse a `pcb-version` string into its `(major, minor)` pair.
@@ -139,8 +112,8 @@ pub fn pcb_version_is_older(current: &str, required: &str) -> Option<bool> {
 
 impl PcbToml {
     fn finish_parse(mut self) -> Result<Self> {
+        self.dependencies.remove_kicad_library_dependencies();
         self.validate_pcb_version()?;
-        self.add_implicit_legacy_asset_dependencies();
         Ok(self)
     }
 
@@ -152,83 +125,12 @@ impl PcbToml {
             && parse_pcb_version(version).is_none()
         {
             anyhow::bail!(
-                "invalid `pcb-version`: expected \"major.minor\" like \"0.3\", got \"{}\"",
+                "invalid `pcb-version`: expected \"major.minor\" like \"0.4\", got \"{}\"",
                 version
             );
         }
 
         Ok(())
-    }
-
-    fn add_implicit_legacy_asset_dependencies(&mut self) {
-        if self.assets.is_empty() {
-            return;
-        }
-
-        let entries = self
-            .workspace
-            .as_ref()
-            .map(|w| w.kicad_library.clone())
-            .unwrap_or_else(default_kicad_library);
-        let repos: Vec<&String> = entries
-            .iter()
-            .flat_map(|entry| {
-                std::iter::once(&entry.symbols)
-                    .chain(std::iter::once(&entry.footprints))
-                    .chain(entry.models.values())
-            })
-            .collect();
-
-        let mut selected = BTreeMap::<String, Version>::new();
-        for (asset_key, spec) in &self.assets {
-            let Some(version) = parse_asset_semver(spec) else {
-                continue;
-            };
-
-            for repo in &repos {
-                if !asset_targets_repo(asset_key, repo) {
-                    continue;
-                }
-                let should_update = match selected.get(repo.as_str()) {
-                    Some(cur) => version > *cur,
-                    None => true,
-                };
-                if should_update {
-                    selected.insert((*repo).clone(), version.clone());
-                }
-            }
-        }
-
-        for (repo, version) in selected {
-            self.dependencies
-                .direct
-                .entry(repo)
-                .or_insert_with(|| DependencySpec::Version(version.to_string()));
-        }
-    }
-
-    /// Check if this uses legacy V1-only constructs.
-    fn requires_v1(&self) -> bool {
-        !self.packages.is_empty() || self.module.is_some()
-    }
-
-    /// Check if this manifest is V2-compatible.
-    ///
-    /// Returns `false` for legacy V1 manifests (used by `pcb migrate`).
-    pub fn is_v2(&self) -> bool {
-        if let Some(w) = &self.workspace {
-            // Workspace present: V2 if pcb-version >= 0.3
-            if let Some(version_str) = &w.pcb_version {
-                return parse_pcb_version(version_str)
-                    .map(|(major, minor)| major > 0 || minor >= 3)
-                    .unwrap_or(false);
-            }
-            // No pcb-version means legacy V1.
-            return false;
-        }
-
-        // No workspace: V2 unless it has V1-only constructs
-        !self.requires_v1()
     }
 
     /// Parse from TOML string
@@ -287,7 +189,7 @@ impl PcbToml {
     /// ```text
     /// # ```pcb
     /// # [workspace]
-    /// # pcb-version = "0.3"
+    /// # pcb-version = "0.4"
     /// # ```
     /// ```
     ///
@@ -303,28 +205,16 @@ impl PcbToml {
         self.workspace.is_some()
     }
 
-    /// Check if this configuration represents a module (legacy V1; used by `pcb migrate` only)
-    pub fn is_module(&self) -> bool {
-        self.module.is_some()
-    }
-
     /// Check if this configuration represents a board
     pub fn is_board(&self) -> bool {
         self.board.is_some()
-    }
-
-    /// Get package aliases (legacy V1; V2 does not support aliases)
-    pub fn packages(&self) -> HashMap<String, String> {
-        self.packages.clone()
     }
 
     /// Auto-generate aliases from dependencies (V2 only)
     ///
     /// Takes the last path segment as the alias key. Only creates alias if unique (no collisions).
     /// Examples:
-    /// - "github.com/diodeinc/stdlib" → "@stdlib"
     /// - "github.com/diodeinc/registry/reference/XAL7070-562MEx" → "@XAL7070-562MEx"
-    /// - "gitlab.com/kicad/libraries/kicad-symbols" → "@kicad-symbols"
     pub fn auto_generated_aliases(&self) -> HashMap<String, String> {
         let mut aliases = HashMap::new();
         let mut seen_names: HashMap<String, usize> = HashMap::new();
@@ -354,7 +244,8 @@ impl PcbToml {
 }
 
 /// Workspace configuration
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceConfig {
     /// Optional Diode workspace name override.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -372,11 +263,7 @@ pub struct WorkspaceConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 
-    /// Dependency resolver version (legacy; ignored)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resolver: Option<String>,
-
-    /// Minimum compatible toolchain release series (e.g., "0.3")
+    /// Minimum compatible toolchain release series (e.g., "0.4")
     /// V2 only. Indicates breaking changes requiring newer compiler.
     #[serde(skip_serializing_if = "Option::is_none", rename = "pcb-version")]
     pub pcb_version: Option<String>,
@@ -386,19 +273,9 @@ pub struct WorkspaceConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
 
-    /// Kicad-style library linkage configuration.
-    #[serde(
-        default = "default_kicad_library",
-        skip_serializing_if = "is_default_kicad_library"
-    )]
-    pub kicad_library: Vec<KicadLibraryConfig>,
-
-    /// Deprecated compatibility field.
-    ///
-    /// Parsed from older V2 manifests, but ignored by workspace discovery and omitted
-    /// from serialized manifests.
-    #[serde(default, skip_serializing)]
-    pub members: Vec<String>,
+    /// BOM command and sourcing configuration.
+    #[serde(default, skip_serializing_if = "BomConfig::is_default")]
+    pub bom: BomConfig,
 
     /// Default board name to use
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -420,92 +297,20 @@ pub struct WorkspaceConfig {
     pub exclude: Vec<String>,
 }
 
-impl Default for WorkspaceConfig {
-    fn default() -> Self {
-        Self {
-            name: None,
-            repository: None,
-            path: None,
-            resolver: None,
-            pcb_version: None,
-            endpoint: None,
-            kicad_library: default_kicad_library(),
-            default_board: None,
-            members: Vec::new(),
-            vendor: Vec::new(),
-            preferred: Vec::new(),
-            exclude: Vec::new(),
-        }
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BomConfig {
+    /// Require exact MPN matching when fetching availability from the BOM service.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict: bool,
+}
+
+impl BomConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
     }
 }
 
-/// Kicad-style library relationship hint.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KicadLibraryConfig {
-    /// Concrete semver version, e.g. "9.0.3".
-    pub version: Version,
-    /// Symbols repo URL (dependency base path).
-    pub symbols: String,
-    /// Footprints repo URL (dependency base path).
-    pub footprints: String,
-    /// Mapping from KiCad text variable name to model repo URL.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub models: BTreeMap<String, String>,
-    /// Optional URL of a TOML file containing `parts = [...]` entries for this symbols repo.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parts: Option<String>,
-    /// Optional HTTP archive URL template for materialization.
-    ///
-    /// Supports `{repo}`, `{repo_name}`, `{version}`, `{major}` placeholders.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub http_mirror: Option<String>,
-}
-
-impl KicadLibraryConfig {
-    /// All repository URLs (symbols, footprints, models) in this entry.
-    pub fn repo_urls(&self) -> impl Iterator<Item = &str> {
-        [self.symbols.as_str(), self.footprints.as_str()]
-            .into_iter()
-            .chain(self.models.values().map(|s| s.as_str()))
-    }
-}
-
-pub const DEFAULT_KICAD_HTTP_MIRROR_TEMPLATE: &str =
-    "https://kicad-mirror.api.diode.computer/{repo_name}-{version}.tar.zst";
-pub const DEFAULT_KICAD_PARTS_URL: &str =
-    "https://kicad-mirror.api.diode.computer/kicad-parts-{version}.toml";
-pub const STDLIB_PINNED_KICAD_VERSION: Version = Version::new(9, 0, 3);
-
-fn default_kicad_library_entry(version: Version, model_var: &str) -> KicadLibraryConfig {
-    KicadLibraryConfig {
-        version,
-        symbols: "gitlab.com/kicad/libraries/kicad-symbols".to_string(),
-        footprints: "gitlab.com/kicad/libraries/kicad-footprints".to_string(),
-        models: BTreeMap::from([(
-            model_var.to_string(),
-            "gitlab.com/kicad/libraries/kicad-packages3D".to_string(),
-        )]),
-        parts: Some(DEFAULT_KICAD_PARTS_URL.to_string()),
-        http_mirror: Some(DEFAULT_KICAD_HTTP_MIRROR_TEMPLATE.to_string()),
-    }
-}
-
-fn default_kicad_library() -> Vec<KicadLibraryConfig> {
-    vec![
-        default_kicad_library_entry(STDLIB_PINNED_KICAD_VERSION, "KICAD9_3DMODEL_DIR"),
-        default_kicad_library_entry(Version::new(10, 0, 0), "KICAD10_3DMODEL_DIR"),
-    ]
-}
-
-pub fn stdlib_pinned_kicad_library() -> KicadLibraryConfig {
-    default_kicad_library_entry(STDLIB_PINNED_KICAD_VERSION, "KICAD9_3DMODEL_DIR")
-}
-
-fn is_default_kicad_library(value: &[KicadLibraryConfig]) -> bool {
-    value == default_kicad_library().as_slice()
-}
-
-/// Access control configuration (shared by V1 and V2)
+/// Access control configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccessConfig {
     /// Access control list (email patterns)
@@ -513,14 +318,7 @@ pub struct AccessConfig {
     pub allow: Vec<String>,
 }
 
-/// Module configuration (V1 only)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModuleConfig {
-    /// Module name
-    pub name: String,
-}
-
-/// Board configuration (used in both V1 and V2)
+/// Board configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Board {
     /// Board name
@@ -617,203 +415,13 @@ pub struct ManifestPart {
     pub datasheet: Option<String>,
 }
 
-/// Legacy V2 asset dependency specification.
-///
-/// Parsed only for backwards compatibility with older manifests.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum AssetDependencySpec {
-    /// Simple ref string - used literally as git tag/branch (no v-prefix logic)
-    /// Examples: "v7.0.0", "2024-09-release", "kicad-7.0.0"
-    Ref(String),
-
-    /// Detailed specification with branch/rev support
-    Detailed(AssetDependencyDetail),
-}
-
-/// Legacy detailed asset dependency specification.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AssetDependencyDetail {
-    /// Git ref (tag/branch) - used literally, no semver parsing or v-prefix fallback
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-
-    /// Git branch - resolved to commit hash in lockfile
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-
-    /// Git revision (commit hash)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rev: Option<String>,
-    // Kept for old manifests only.
-}
-
-/// V2 Lockfile entry
-///
-/// Stores resolved version and cryptographic hashes for a dependency.
-/// Format mirrors Go's go.sum with separate content and manifest hashes.
-///
-/// # Example
-/// ```text
-/// github.com/diodeinc/stdlib v0.3.2 h1:abc123...
-/// github.com/diodeinc/stdlib v0.3.2/pcb.toml h1:def456...
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LockEntry {
-    /// Module path (e.g., "github.com/diodeinc/stdlib")
-    pub module_path: String,
-
-    /// Resolved version (may be pseudo-version for branches)
-    pub version: String,
-
-    /// Content hash (h1: prefix + base64-encoded BLAKE3)
-    pub content_hash: String,
-
-    /// Manifest hash (h1: prefix + base64-encoded BLAKE3)
-    /// None for non-package repos without pcb.toml (for example KiCad repos)
-    pub manifest_hash: Option<String>,
-}
-
-/// V2 Lockfile (pcb.sum)
-///
-/// Stores resolved versions and cryptographic hashes for reproducible builds.
-/// Automatically updated when dependencies change.
-#[derive(Debug, Clone, Default)]
-pub struct Lockfile {
-    /// Map from (module_path, version) to lock entry.
-    /// Uses BTreeMap for deterministic iteration order.
-    pub entries: BTreeMap<(String, String), LockEntry>,
-}
-
-impl Lockfile {
-    /// Parse pcb.sum file
-    ///
-    /// Format:
-    /// ```text
-    /// module_path version h1:hash
-    /// module_path version/pcb.toml h1:hash
-    /// ```
-    pub fn parse(content: &str) -> Result<Self> {
-        let mut entries = BTreeMap::new();
-
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() != 3 {
-                anyhow::bail!("Invalid lockfile line: {}", line);
-            }
-
-            let module_path = parts[0];
-            let version_part = parts[1];
-            let hash = parts[2];
-
-            if !hash.starts_with("h1:") {
-                anyhow::bail!("Invalid hash format (expected h1:): {}", hash);
-            }
-
-            // Check if this is a manifest hash line (ends with /pcb.toml)
-            if let Some(version) = version_part.strip_suffix("/pcb.toml") {
-                // Update existing entry with manifest hash
-                let key = (module_path.to_string(), version.to_string());
-                entries
-                    .entry(key.clone())
-                    .or_insert_with(|| LockEntry {
-                        module_path: module_path.to_string(),
-                        version: version.to_string(),
-                        content_hash: String::new(),
-                        manifest_hash: None,
-                    })
-                    .manifest_hash = Some(hash.to_string());
-            } else {
-                // Content hash line
-                let key = (module_path.to_string(), version_part.to_string());
-                entries
-                    .entry(key.clone())
-                    .or_insert_with(|| LockEntry {
-                        module_path: module_path.to_string(),
-                        version: version_part.to_string(),
-                        content_hash: String::new(),
-                        manifest_hash: None,
-                    })
-                    .content_hash = hash.to_string();
-            }
-        }
-
-        Ok(Lockfile { entries })
-    }
-
-    /// Get lock entry for a module
-    pub fn get(&self, module_path: &str, version: &str) -> Option<&LockEntry> {
-        self.entries
-            .get(&(module_path.to_string(), version.to_string()))
-    }
-
-    /// Insert or update lock entry
-    pub fn insert(&mut self, entry: LockEntry) {
-        let key = (entry.module_path.clone(), entry.version.clone());
-        self.entries.insert(key, entry);
-    }
-
-    /// Iterate over all lock entries
-    pub fn iter(&self) -> impl Iterator<Item = &LockEntry> {
-        self.entries.values()
-    }
-
-    /// Find any locked version for a module path
-    ///
-    /// Returns the first entry found for the given module path (useful for branch/rev lookups).
-    pub fn find_by_path(&self, module_path: &str) -> Option<&LockEntry> {
-        self.entries.values().find(|e| e.module_path == module_path)
-    }
-}
-
-impl std::fmt::Display for Lockfile {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut lines = Vec::new();
-
-        // Sort entries for deterministic output
-        let mut sorted: Vec<_> = self.entries.values().collect();
-        sorted.sort_by(|a, b| {
-            a.module_path
-                .cmp(&b.module_path)
-                .then(a.version.cmp(&b.version))
-        });
-
-        for entry in sorted {
-            // Content hash line
-            lines.push(format!(
-                "{} {} {}",
-                entry.module_path, entry.version, entry.content_hash
-            ));
-
-            // Manifest hash line (if present)
-            if let Some(manifest_hash) = &entry.manifest_hash {
-                lines.push(format!(
-                    "{} {}/pcb.toml {}",
-                    entry.module_path, entry.version, manifest_hash
-                ));
-            }
-        }
-
-        if lines.is_empty() {
-            Ok(())
-        } else {
-            writeln!(f, "{}", lines.join("\n"))
-        }
-    }
-}
-
 /// Extract inline pcb.toml manifest from .zen file content
 ///
 /// Looks for a comment block in the leading comments like:
 /// ```text
 /// # ```pcb
 /// # [workspace]
-/// # pcb-version = "0.3"
+/// # pcb-version = "0.4"
 /// # ```
 /// ```
 ///
@@ -923,11 +531,9 @@ pub fn find_workspace_root(file_provider: &dyn FileProvider, start: &Path) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kicad_library::validate_kicad_library_config;
 
     #[test]
     fn test_parse_board_only() {
-        // Board-only configs are V2 (no V1-specific constructs)
         let content = r#"
 [board]
 name = "TestBoard"
@@ -936,7 +542,6 @@ description = "A test board"
 "#;
 
         let config = PcbToml::parse(content).unwrap();
-        assert!(config.is_v2()); // No V1 constructs, so it's V2
         assert!(config.is_board());
 
         let board = config.board.unwrap();
@@ -946,25 +551,75 @@ description = "A test board"
     }
 
     #[test]
-    fn test_parse_v1_module() {
-        // [module] section requires V1
-        let content = r#"
+    fn test_parse_rejects_legacy_module_section() {
+        let err = PcbToml::parse(
+            r#"
 [module]
-name = "stdlib"
-module_path = "github.com/diodeinc/stdlib"
-version = "0.3.0"
-"#;
+name = "legacy"
+"#,
+        )
+        .expect_err("legacy [module] should not parse");
 
-        let config = PcbToml::parse(content).unwrap();
-        assert!(!config.is_v2()); // Has [module], requires V1
-        assert!(config.is_module());
+        assert!(err.to_string().contains("unknown field `module`"));
+    }
+
+    #[test]
+    fn test_parse_rejects_legacy_packages_section() {
+        let err = PcbToml::parse(
+            r#"
+[packages]
+registry = "github.com/diodeinc/registry"
+"#,
+        )
+        .expect_err("legacy [packages] should not parse");
+
+        assert!(err.to_string().contains("unknown field `packages`"));
+    }
+
+    #[test]
+    fn test_parse_rejects_legacy_assets_section() {
+        let err = PcbToml::parse(
+            r#"
+[assets]
+"github.com/example/assets" = "1.0.0"
+"#,
+        )
+        .expect_err("legacy [assets] should not parse");
+
+        assert!(err.to_string().contains("unknown field `assets`"));
+    }
+
+    #[test]
+    fn test_parse_rejects_legacy_workspace_resolver() {
+        let err = PcbToml::parse(
+            r#"
+[workspace]
+resolver = "2"
+"#,
+        )
+        .expect_err("legacy workspace resolver should not parse");
+
+        assert!(err.to_string().contains("unknown field `resolver`"));
+    }
+
+    #[test]
+    fn test_parse_rejects_workspace_members() {
+        let err = PcbToml::parse(
+            r#"
+[workspace]
+members = ["boards/*"]
+"#,
+        )
+        .expect_err("workspace.members should not parse");
+
+        assert!(err.to_string().contains("unknown field `members`"));
     }
 
     #[test]
     fn test_parse_v2_package() {
         let content = r#"
 [workspace]
-pcb-version = "0.3"
+pcb-version = "0.4"
 
 [board]
 name = "WV0002"
@@ -973,10 +628,9 @@ description = "Power Regulator Board"
 "#;
 
         let config = PcbToml::parse(content).unwrap();
-        assert!(config.is_v2());
 
         let workspace = config.workspace.as_ref().unwrap();
-        assert_eq!(workspace.pcb_version.as_deref(), Some("0.3"));
+        assert_eq!(workspace.pcb_version.as_deref(), Some("0.4"));
 
         let board = config.board.as_ref().unwrap();
         assert_eq!(board.name, "WV0002");
@@ -985,78 +639,20 @@ description = "Power Regulator Board"
     }
 
     #[test]
-    fn test_workspace_kicad_library_defaults_to_kicad9_and_10() {
-        let content = r#"
-[workspace]
-pcb-version = "0.3"
-"#;
-
-        let config = PcbToml::parse(content).unwrap();
-        let workspace = config.workspace.as_ref().unwrap();
-        assert_eq!(workspace.kicad_library.len(), 2);
-        assert_eq!(workspace.kicad_library[0].version, Version::new(9, 0, 3));
-        assert_eq!(
-            workspace.kicad_library[0].symbols,
-            "gitlab.com/kicad/libraries/kicad-symbols"
-        );
-        assert_eq!(
-            workspace.kicad_library[0].footprints,
-            "gitlab.com/kicad/libraries/kicad-footprints"
-        );
-        assert_eq!(
-            workspace.kicad_library[0].models.get("KICAD9_3DMODEL_DIR"),
-            Some(&"gitlab.com/kicad/libraries/kicad-packages3D".to_string())
-        );
-        assert_eq!(
-            workspace.kicad_library[0].parts.as_deref(),
-            Some(DEFAULT_KICAD_PARTS_URL)
-        );
-        assert_eq!(
-            workspace.kicad_library[0].http_mirror.as_deref(),
-            Some(DEFAULT_KICAD_HTTP_MIRROR_TEMPLATE)
-        );
-        assert_eq!(workspace.kicad_library[1].version, Version::new(10, 0, 0));
-        assert_eq!(
-            workspace.kicad_library[1].models.get("KICAD10_3DMODEL_DIR"),
-            Some(&"gitlab.com/kicad/libraries/kicad-packages3D".to_string())
-        );
-    }
-
-    #[test]
     fn test_parse_v2_workspace() {
         let content = r#"
 [workspace]
-pcb-version = "0.3"
-members = ["boards/*"]
-
-[[workspace.kicad_library]]
-version = "9.0.3"
-symbols = "gitlab.com/kicad/libraries/kicad-symbols"
-footprints = "gitlab.com/kicad/libraries/kicad-footprints"
-models = { KICAD9_3DMODEL_DIR = "gitlab.com/kicad/libraries/kicad-packages3D" }
-parts = "https://example.com/kicad-parts.toml"
+pcb-version = "0.4"
 
 [access]
 allow = ["*@weaverobots.com"]
 "#;
 
         let config = PcbToml::parse(content).unwrap();
-        assert!(config.is_v2());
         assert!(config.is_workspace());
 
         let workspace = config.workspace.as_ref().unwrap();
-        assert_eq!(workspace.pcb_version.as_deref(), Some("0.3"));
-        assert_eq!(workspace.kicad_library.len(), 1);
-        assert_eq!(workspace.kicad_library[0].version, Version::new(9, 0, 3));
-        assert_eq!(
-            workspace.kicad_library[0].parts.as_deref(),
-            Some("https://example.com/kicad-parts.toml")
-        );
-        assert_eq!(workspace.members, vec!["boards/*"]);
-        assert!(
-            !toml::to_string_pretty(&config).unwrap().contains("members"),
-            "deprecated workspace.members should be parsed but not serialized"
-        );
+        assert_eq!(workspace.pcb_version.as_deref(), Some("0.4"));
 
         let access = config.access.as_ref().unwrap();
         assert_eq!(access.allow, vec!["*@weaverobots.com"]);
@@ -1066,7 +662,7 @@ allow = ["*@weaverobots.com"]
     fn test_parse_v2_dependencies() {
         let content = r#"
 [workspace]
-pcb-version = "0.3"
+pcb-version = "0.4"
 
 [board]
 name = "Test"
@@ -1170,7 +766,7 @@ path = "test.zen"
     fn test_parse_v2_patch() {
         let content = r#"
 [workspace]
-pcb-version = "0.3"
+pcb-version = "0.4"
 
 [board]
 name = "Test"
@@ -1188,10 +784,26 @@ path = "test.zen"
     }
 
     #[test]
+    fn test_parse_workspace_bom_config() {
+        let content = r#"
+[workspace]
+pcb-version = "0.4"
+
+[workspace.bom]
+strict = true
+"#;
+
+        let config = PcbToml::parse(content).unwrap();
+        let workspace = config.workspace.unwrap();
+
+        assert!(workspace.bom.strict);
+    }
+
+    #[test]
     fn test_parse_v2_patch_branch() {
         let content = r#"
 [workspace]
-pcb-version = "0.3"
+pcb-version = "0.4"
 
 [board]
 name = "Test"
@@ -1217,7 +829,7 @@ path = "test.zen"
     fn test_parse_v2_patch_rev() {
         let content = r#"
 [workspace]
-pcb-version = "0.3"
+pcb-version = "0.4"
 
 [board]
 name = "Test"
@@ -1243,7 +855,7 @@ path = "test.zen"
     fn test_v2_workspace_and_board() {
         let content = r#"
 [workspace]
-pcb-version = "0.3"
+pcb-version = "0.4"
 
 [board]
 name = "RootBoard"
@@ -1257,7 +869,7 @@ name = "RootBoard"
     }
 
     #[test]
-    fn test_workspace_no_pcb_version_is_v1() {
+    fn test_workspace_no_pcb_version_parses() {
         let content = r#"
 [workspace]
 
@@ -1266,11 +878,17 @@ name = "TestBoard"
 "#;
 
         let config = PcbToml::parse(content).unwrap();
-        assert!(!config.is_v2());
+        assert_eq!(
+            config
+                .workspace
+                .as_ref()
+                .and_then(|w| w.pcb_version.as_deref()),
+            None
+        );
     }
 
     #[test]
-    fn test_workspace_old_pcb_version_is_v1() {
+    fn test_workspace_old_pcb_version_parses() {
         let content = r#"
 [workspace]
 pcb-version = "0.2"
@@ -1280,7 +898,13 @@ name = "TestBoard"
 "#;
 
         let config = PcbToml::parse(content).unwrap();
-        assert!(!config.is_v2());
+        assert_eq!(
+            config
+                .workspace
+                .as_ref()
+                .and_then(|w| w.pcb_version.as_deref()),
+            Some("0.2")
+        );
     }
 
     #[test]
@@ -1288,7 +912,7 @@ name = "TestBoard"
         let err = PcbToml::parse(
             r#"
 [workspace]
-pcb-version = "0.3.71"
+pcb-version = "0.4.1"
 "#,
         )
         .expect_err("expected patch pcb-version to be rejected at parse time");
@@ -1297,10 +921,10 @@ pcb-version = "0.3.71"
     }
 
     #[test]
-    fn test_empty_is_v2() {
-        // Empty pcb.toml is valid V2 (no V1 constructs)
+    fn test_empty_manifest_parses() {
         let config = PcbToml::parse("").unwrap();
-        assert!(config.is_v2());
+        assert!(config.workspace.is_none());
+        assert!(config.board.is_none());
     }
 
     #[test]
@@ -1309,20 +933,19 @@ pcb-version = "0.3.71"
 #
 # ```pcb
 # [workspace]
-# pcb-version = "0.3"
+# pcb-version = "0.4"
 #
 # [dependencies]
-# "github.com/diodeinc/stdlib" = "0.3"
 # ```
 
-load("github.com/diodeinc/stdlib/units.zen", "Voltage")
+load("@stdlib/units.zen", "Voltage")
 "#;
 
         let result = extract_inline_manifest(zen_content);
         assert!(result.is_some());
         let toml = result.unwrap();
         assert!(toml.contains("[workspace]"));
-        assert!(toml.contains("pcb-version = \"0.3\""));
+        assert!(toml.contains("pcb-version = \"0.4\""));
         assert!(toml.contains("[dependencies]"));
     }
 
@@ -1330,7 +953,7 @@ load("github.com/diodeinc/stdlib/units.zen", "Voltage")
     fn test_extract_inline_manifest_no_shebang() {
         let zen_content = r#"# ```pcb
 # [workspace]
-# pcb-version = "0.3"
+# pcb-version = "0.4"
 # ```
 
 load("foo.zen", "Bar")
@@ -1354,7 +977,7 @@ load("foo.zen", "Bar")
     fn test_extract_inline_manifest_unclosed() {
         let zen_content = r#"# ```pcb
 # [workspace]
-# pcb-version = "0.3"
+# pcb-version = "0.4"
 # Missing closing marker
 
 load("foo.zen", "Bar")
@@ -1369,7 +992,7 @@ load("foo.zen", "Bar")
     fn test_from_zen_content() {
         let zen_content = r#"# ```pcb
 # [workspace]
-# pcb-version = "0.3"
+# pcb-version = "0.4"
 # ```
 
 load("foo.zen", "Bar")
@@ -1378,12 +1001,11 @@ load("foo.zen", "Bar")
         let result = PcbToml::from_zen_content(zen_content);
         assert!(result.is_some());
         let config = result.unwrap().unwrap();
-        assert!(config.is_v2());
+        assert!(config.workspace.is_some());
     }
 
     #[test]
-    fn test_from_zen_content_v1() {
-        // V1 style inline manifest (no pcb-version)
+    fn test_from_zen_content_rejects_legacy_packages() {
         let zen_content = r#"# ```pcb
 # [packages]
 # stdlib = "@github/diodeinc/stdlib:v0.3.2"
@@ -1394,8 +1016,10 @@ load("@stdlib/foo.zen", "Bar")
 
         let result = PcbToml::from_zen_content(zen_content);
         assert!(result.is_some());
-        let config = result.unwrap().unwrap();
-        assert!(!config.is_v2()); // Has [packages] which requires V1
+        let err = result
+            .unwrap()
+            .expect_err("legacy [packages] should not parse");
+        assert!(err.to_string().contains("unknown field `packages`"));
     }
 
     #[test]
@@ -1417,32 +1041,5 @@ load("@stdlib/foo.zen", "Bar")
             split_repo_and_subpath("gitlab.com/group/project/pkg"),
             ("gitlab.com/group/project/pkg", "")
         );
-    }
-
-    #[test]
-    fn test_validate_kicad_library_config() {
-        let mut entry = KicadLibraryConfig {
-            version: Version::new(9, 0, 3),
-            symbols: "gitlab.com/kicad/libraries/kicad-symbols".to_string(),
-            footprints: "gitlab.com/kicad/libraries/kicad-footprints".to_string(),
-            models: BTreeMap::from([(
-                "KICAD9_3DMODEL_DIR".to_string(),
-                "gitlab.com/kicad/libraries/kicad-packages3D".to_string(),
-            )]),
-            parts: None,
-            http_mirror: None,
-        };
-        assert!(validate_kicad_library_config(&entry).is_ok());
-
-        entry.symbols = "".to_string();
-        assert!(validate_kicad_library_config(&entry).is_err());
-
-        entry.symbols = "gitlab.com/kicad/libraries/kicad-symbols".to_string();
-        entry.parts = Some("".to_string());
-        assert!(validate_kicad_library_config(&entry).is_err());
-
-        entry.parts = None;
-        entry.http_mirror = Some("".to_string());
-        assert!(validate_kicad_library_config(&entry).is_err());
     }
 }

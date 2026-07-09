@@ -61,7 +61,7 @@ fn netlist_includes_part_and_alternatives_json() {
     let board = r#"
 # ```pcb
 # [workspace]
-# pcb-version = "0.3"
+# pcb-version = "0.4"
 # ```
 
 P1 = Net()
@@ -69,7 +69,7 @@ P2 = Net()
 
 Component(
     name = "R1",
-    footprint = "Resistor_SMD:R_0603_1005Metric",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"),
     pin_defs = {"1": "1", "2": "2"},
     pins = {"1": P1, "2": P2},
     part = Part(
@@ -132,7 +132,7 @@ fn netlist_reflects_modifier_mutations_for_part_and_alternatives() {
     let board = r#"
 # ```pcb
 # [workspace]
-# pcb-version = "0.3"
+# pcb-version = "0.4"
 # ```
 
 P1 = Net()
@@ -154,7 +154,7 @@ builtin.add_component_modifier(mutate)
 
 Component(
     name = "R1",
-    footprint = "Resistor_SMD:R_0603_1005Metric",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"),
     pin_defs = {"1": "1", "2": "2"},
     pins = {"1": P1, "2": P2},
 )
@@ -191,7 +191,7 @@ fn netlist_signature_includes_io_direction_metadata() {
     let board = r#"
 # ```pcb
 # [workspace]
-# pcb-version = "0.3"
+# pcb-version = "0.4"
 # ```
 
 Child = Module("Child.zen")
@@ -206,7 +206,7 @@ BIDIR = io(Net)
 
 Component(
     name = "U",
-    footprint = "TEST:0402",
+    footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod"),
     pin_defs = {"IN": "1", "OUT": "2", "IO": "3"},
     pins = {"IN": VIN, "OUT": VOUT, "IO": BIDIR},
     skip_bom = True,
@@ -301,7 +301,7 @@ fn datasheet_test_symbol(datasheet: &str) -> String {
 }
 
 fn build_datasheet_test_output(datasheet: &str, extra_files: &[(&str, &str)]) -> String {
-    let mut sandbox = Sandbox::new();
+    let mut sandbox = Sandbox::new().with_workspace();
     sandbox
         .write(
             "components/TestPart/TestPart.kicad_sym",
@@ -353,7 +353,7 @@ Component(
             "pcb.toml",
             r#"
 [workspace]
-pcb-version = "0.3"
+pcb-version = "0.4"
 
 [dependencies]
 "github.com/testorg/components/MyPart" = "1.0.0"
@@ -589,7 +589,7 @@ Component(
             r#"
 # ```pcb
 # [workspace]
-# pcb-version = "0.3"
+# pcb-version = "0.4"
 # ```
 
 TestPart = Module("components/TestPart/TestPart.zen")
@@ -630,7 +630,7 @@ Component(
             r#"
 # ```pcb
 # [workspace]
-# pcb-version = "0.3"
+# pcb-version = "0.4"
 # ```
 
 TestPart = Module("components/TestPart/TestPart.zen")

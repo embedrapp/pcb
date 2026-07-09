@@ -11,10 +11,8 @@ description = "Core functionality for Zen PCB design language"
 default = ["native"]
 native = [
     "dirs",
-    "tar",
     "walkdir",
     "rayon",
-    "dep:pcb-canonical",
 ]
 wasm = []
 table = ["pcb-sch/table"]
@@ -28,7 +26,6 @@ starlark_map = { workspace = true }
 starlark_syntax = { workspace = true }
 
 anyhow = { workspace = true }
-either = { workspace = true }
 globset = { workspace = true }
 itertools = { workspace = true }
 heck = { workspace = true }
@@ -41,20 +38,16 @@ log = { workspace = true }
 regex = { workspace = true }
 ariadne = { workspace = true }
 dirs = { workspace = true, optional = true }
-tar = { workspace = true, optional = true }
 toml = { workspace = true }
-zip = { workspace = true }
 fixedbitset = { workspace = true }
 smallvec = { workspace = true }
 rust_decimal = { workspace = true }
 pcb-eda = { workspace = true }
 pcb-sch = { workspace = true }
 pcb-sexpr = { workspace = true }
-pcb-canonical = { workspace = true, optional = true }
 tracing = { workspace = true }
 rayon = { workspace = true, optional = true }
 url = { workspace = true }
-include_dir = "0.7.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }

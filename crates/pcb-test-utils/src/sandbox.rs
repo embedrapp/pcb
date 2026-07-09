@@ -40,10 +40,6 @@
 use assert_fs::TempDir;
 use assert_fs::fixture::PathChild;
 use duct::Expression;
-use pcb_zen_core::config::{STDLIB_PINNED_KICAD_VERSION, WorkspaceConfig};
-#[cfg(test)]
-use pcb_zen_core::kicad_library::KICAD_PARTS_INDEX_FILE;
-use pcb_zen_core::kicad_library::{kicad_http_mirror_template_for_repo, render_repo_url_template};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsStr;
 
@@ -52,30 +48,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub use assert_cmd::cargo_bin;
-
-fn default_kicad_http_mirror(module_path: &str) -> Option<String> {
-    let kicad_entries = WorkspaceConfig::default().kicad_library;
-    let version = STDLIB_PINNED_KICAD_VERSION;
-    kicad_http_mirror_template_for_repo(&kicad_entries, module_path, &version)
-        .unwrap()
-        .map(|template| render_repo_url_template(&template, module_path, &version))
-        .transpose()
-        .unwrap()
-}
-
-fn replace_with_symlink(src: &Path, dst: &Path) {
-    if dst.exists() {
-        fs::remove_dir_all(dst).unwrap();
-    }
-    if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent).unwrap();
-    }
-
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(src, dst).unwrap();
-    #[cfg(windows)]
-    std::os::windows::fs::symlink_dir(src, dst).unwrap();
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct RepoRewrite {
@@ -128,7 +100,7 @@ impl Sandbox {
 
         let default_cwd = root.path().to_path_buf();
 
-        let mut s = Self {
+        let s = Self {
             root,
             home,
             gitconfig,
@@ -139,14 +111,16 @@ impl Sandbox {
             default_cwd,
             trace: false,
             hash_globs: Vec::new(),
-            // Ignore pcb.sum by default - it's a lockfile that changes with stdlib versions
-            ignore_globs: vec!["**/pcb.sum".to_string()],
+            ignore_globs: Vec::new(),
         };
         s.write_gitconfig();
-        // Most integration tests need stdlib and KiCad assets. Seeding here keeps tests offline
-        // while avoiding repeated downloads.
-        s.seed_stdlib();
         s
+    }
+
+    /// Add a minimal workspace manifest at the sandbox cwd.
+    pub fn with_workspace(mut self) -> Self {
+        self.write("pcb.toml", "[workspace]\npcb-version = \"0.4\"\n");
+        self
     }
 
     /// Enable `GIT_TRACE=1` for commands run with `run` / `run_ok` / `cmd`.
@@ -166,7 +140,6 @@ impl Sandbox {
     }
 
     /// Add glob patterns for files that should be ignored in snapshots.
-    /// Extends the default ignore patterns (e.g., `**/pcb.sum`).
     pub fn ignore_globs<I, S>(&mut self, globs: I) -> &mut Self
     where
         I: IntoIterator<Item = S>,
@@ -478,6 +451,8 @@ impl Sandbox {
         let tmp_pattern = Regex::new(r"(?:/private)?/tmp/\.tmp[a-zA-Z0-9]+").unwrap();
         result = tmp_pattern.replace_all(&result, "<TEMP_DIR>").to_string();
 
+        result = result.replace("<TEMP_DIR>/home/.pcb/cache", "<TEMP_DIR>/.pcb/cache");
+
         // Normalize the actual global PCB cache root used by this runtime.
         // Also sanitize its canonicalized alias (if different).
         let cache_base = pcb_zen::cache_index::cache_base()
@@ -692,65 +667,6 @@ impl Sandbox {
         expr = expr.full_env(&env_map);
 
         expr
-    }
-
-    fn seed_cache_repo(
-        &mut self,
-        module_path: &str,
-        version: &str,
-        add_v_prefix: bool,
-        http_mirror: Option<&str>,
-    ) {
-        let global_cache = pcb_zen::cache_index::cache_base();
-        let sandbox_cache = self.home.join(".pcb/cache");
-
-        let global_dir = global_cache.join(module_path).join(version);
-        let sandbox_dir = sandbox_cache.join(module_path).join(version);
-
-        if global_dir == sandbox_dir {
-            return;
-        }
-
-        pcb_zen::resolve::ensure_sparse_checkout(
-            &global_dir,
-            module_path,
-            version,
-            add_v_prefix,
-            http_mirror,
-        )
-        .unwrap();
-
-        replace_with_symlink(&global_dir, &sandbox_dir);
-    }
-
-    /// Seed common asset dependency repos for dep resolution tests.
-    ///
-    /// Embedded stdlib is materialized per-workspace by the toolchain, so only external
-    /// asset repos need seeding here.
-    pub fn seed_stdlib(&mut self) -> &mut Self {
-        let kicad_entries = WorkspaceConfig::default().kicad_library;
-        let default_version = STDLIB_PINNED_KICAD_VERSION;
-        let kicad_version = default_version.to_string();
-        let symbols_repo = "gitlab.com/kicad/libraries/kicad-symbols";
-
-        for repo in [
-            symbols_repo,
-            "gitlab.com/kicad/libraries/kicad-footprints",
-            "gitlab.com/kicad/libraries/kicad-packages3D",
-        ] {
-            let http_mirror = default_kicad_http_mirror(repo);
-            self.seed_cache_repo(repo, &kicad_version, false, http_mirror.as_deref());
-        }
-        pcb_zen::resolve::ensure_kicad_parts_index(
-            &pcb_zen::cache_index::cache_base(),
-            &kicad_entries,
-            symbols_repo,
-            &default_version,
-            false,
-        )
-        .unwrap();
-
-        self
     }
 }
 
@@ -984,23 +900,6 @@ mod tests {
     }
 
     #[test]
-    fn test_sandbox_default_ignores_pcb_sum() {
-        let mut sb = Sandbox::new();
-
-        // Create a file structure with pcb.sum
-        sb.write("src/pcb.sum", "lockfile content")
-            .write("src/pcb.toml", "keep this");
-
-        // Snapshot should exclude pcb.sum by default
-        let manifest = sb.snapshot_dir(".");
-        assert!(manifest.contains("pcb.toml"), "pcb.toml should be included");
-        assert!(
-            !manifest.contains("pcb.sum"),
-            "pcb.sum should be excluded by default"
-        );
-    }
-
-    #[test]
     fn test_cwd_relative_to_sandbox() {
         let mut sb = Sandbox::new();
 
@@ -1024,19 +923,6 @@ mod tests {
             .read()
             .expect("echo should succeed");
         assert!(cache_output.trim().contains("cache"));
-    }
-
-    #[test]
-    fn test_seed_stdlib_materializes_kicad_parts_index() {
-        let sb = Sandbox::new();
-        let symbols_dir = sb
-            .home
-            .join(".pcb/cache/gitlab.com/kicad/libraries/kicad-symbols")
-            .join(STDLIB_PINNED_KICAD_VERSION.to_string());
-
-        assert!(symbols_dir.exists());
-        assert!(symbols_dir.is_symlink());
-        assert!(symbols_dir.join(KICAD_PARTS_INDEX_FILE).is_file());
     }
 
     #[test]
@@ -1253,13 +1139,13 @@ mod tests {
         let sb = Sandbox::new();
         let cache_base = pcb_zen::cache_index::cache_base();
         let input = format!(
-            r#"{{"path":"{}/gitlab.com/kicad/libraries/kicad-symbols/9.0.3/Device.kicad_sym"}}"#,
+            r#"{{"path":"{}/github.com/example/components/1.2.3/Device.kicad_sym"}}"#,
             cache_base.to_string_lossy().replace('\\', "/")
         );
         let output = sb.sanitize_output(&input);
         assert!(!output.contains(&cache_base.to_string_lossy().replace('\\', "/")));
-        assert!(output.contains(
-            r#"<HOME_CACHE>/gitlab.com/kicad/libraries/kicad-symbols/9.0.3/Device.kicad_sym"#
-        ));
+        assert!(
+            output.contains(r#"<HOME_CACHE>/github.com/example/components/1.2.3/Device.kicad_sym"#)
+        );
     }
 }

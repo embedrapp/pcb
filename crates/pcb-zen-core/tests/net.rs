@@ -2,7 +2,6 @@
 mod common;
 
 use crate::common::eval_zen;
-use pcb_zen_core::lang::error::CategorizedDiagnostic;
 
 snapshot_eval!(net_with_symbol, {
     "test.zen" => r#"
@@ -90,43 +89,34 @@ snapshot_eval!(net_name_property_access, {
     "#
 });
 
-snapshot_eval!(net_duplicate_names_uniq, {
+snapshot_eval!(net_duplicate_names_error, {
     "test.zen" => r#"
-        # Two same-named nets at the same level should uniquify to EN and EN_2
         en1 = Net("EN")
         en2 = Net("EN")
 
         Component(
             name = "U1",
-            footprint = "TEST:0402",
+            footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod"),
             pin_defs = {"EN": "1"},
             pins = {"EN": en1},
         )
 
         Component(
             name = "U2",
-            footprint = "TEST:0402",
+            footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod"),
             pin_defs = {"EN": "1"},
             pins = {"EN": en2},
         )
 
-        print("en1:", en1.name)
-        print("en2:", en2.name)
     "#,
 });
 
-snapshot_eval!(net_multiple_collisions, {
+snapshot_eval!(net_multiple_collisions_error, {
     "test.zen" => r#"
-        # Multiple nets with the same name should all get unique suffixes
         a1 = Net("CLK")
         a2 = Net("CLK")
         a3 = Net("CLK")
         a4 = Net("CLK")
-
-        print("a1:", a1.name)
-        print("a2:", a2.name)
-        print("a3:", a3.name)
-        print("a4:", a4.name)
     "#,
 });
 
@@ -143,14 +133,10 @@ snapshot_eval!(net_no_collision_different_names, {
     "#,
 });
 
-snapshot_eval!(net_collision_in_child_module, {
+snapshot_eval!(net_collision_in_child_module_error, {
     "child.zen" => r#"
-        # Child module with duplicate nets
         sig1 = Net("SIG")
         sig2 = Net("SIG")
-
-        print("child sig1:", sig1.name)
-        print("child sig2:", sig2.name)
     "#,
     "test.zen" => r#"
         Child = Module("child.zen")
@@ -303,7 +289,7 @@ snapshot_eval!(interface_net_template_naming, {
         # Test interface net naming - always includes field name with prefix
         
         # Create a regular net
-        net = Net("VCC")
+        net = Net("REGULAR_VCC")
         
         # Define single-net interface
         Power = interface(
@@ -356,7 +342,7 @@ snapshot_eval!(net_type_cast_preserves_name_across_modules, {
         Component(
             name = "R",
             prefix = "R",
-            footprint = "TEST:0402",
+            footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod"),
             pin_defs = {"P1": "1", "P2": "2"},
             pins = {"P1": P1, "P2": P2},
             type = "resistor",
@@ -436,237 +422,6 @@ snapshot_eval!(power_ground_have_default_symbols, {
         print("Analog net:", analog.name)
         print("Gpio net:", gpio.name)
         print("Pwm net:", pwm.name)
-    "#
-});
-
-// =============================================================================
-// NotConnected net type promotion tests
-// =============================================================================
-// NotConnected is the "universal donor" - it can promote to any other net type.
-// Nothing can promote to NotConnected.
-
-snapshot_eval!(not_connected_promotes_to_power, {
-    "interfaces.zen" => r#"
-        Power = builtin.net_type("Power")
-        NotConnected = builtin.net_type("NotConnected")
-    "#,
-    "child.zen" => r#"
-        load("interfaces.zen", "Power")
-
-        vcc = io(Power)
-
-        Component(
-            name = "R1",
-            footprint = "TEST:0402",
-            pin_defs = {"1": "1"},
-            pins = {"1": vcc},
-        )
-    "#,
-    "test.zen" => r#"
-        load("interfaces.zen", "NotConnected")
-
-        Child = Module("child.zen")
-
-        # NotConnected should promote to Power
-        nc = NotConnected("NC")
-        Child(name = "child", vcc = nc)
-
-        print("NotConnected promotes to Power: success")
-    "#
-});
-
-snapshot_eval!(not_connected_promotes_to_ground, {
-    "interfaces.zen" => r#"
-        Ground = builtin.net_type("Ground")
-        NotConnected = builtin.net_type("NotConnected")
-    "#,
-    "child.zen" => r#"
-        load("interfaces.zen", "Ground")
-
-        gnd = io(Ground)
-
-        Component(
-            name = "R1",
-            footprint = "TEST:0402",
-            pin_defs = {"1": "1"},
-            pins = {"1": gnd},
-        )
-    "#,
-    "test.zen" => r#"
-        load("interfaces.zen", "NotConnected")
-
-        Child = Module("child.zen")
-
-        # NotConnected should promote to Ground
-        nc = NotConnected("NC")
-        Child(name = "child", gnd = nc)
-
-        print("NotConnected promotes to Ground: success")
-    "#
-});
-
-snapshot_eval!(not_connected_promotes_to_net, {
-    "interfaces.zen" => r#"
-        NotConnected = builtin.net_type("NotConnected")
-    "#,
-    "child.zen" => r#"
-        sig = io(Net)
-
-        Component(
-            name = "R1",
-            footprint = "TEST:0402",
-            pin_defs = {"1": "1"},
-            pins = {"1": sig},
-        )
-    "#,
-    "test.zen" => r#"
-        load("interfaces.zen", "NotConnected")
-
-        Child = Module("child.zen")
-
-        # NotConnected should promote to Net
-        nc = NotConnected("NC")
-        Child(name = "child", sig = nc)
-
-        print("NotConnected promotes to Net: success")
-    "#
-});
-
-snapshot_eval!(not_connected_promotes_to_custom_type, {
-    "interfaces.zen" => r#"
-        Gpio = builtin.net_type("Gpio")
-        NotConnected = builtin.net_type("NotConnected")
-    "#,
-    "child.zen" => r#"
-        load("interfaces.zen", "Gpio")
-
-        gpio = io(Gpio)
-
-        Component(
-            name = "R1",
-            footprint = "TEST:0402",
-            pin_defs = {"1": "1"},
-            pins = {"1": gpio},
-        )
-    "#,
-    "test.zen" => r#"
-        load("interfaces.zen", "NotConnected")
-
-        Child = Module("child.zen")
-
-        # NotConnected should promote to any custom net type
-        nc = NotConnected("NC")
-        Child(name = "child", gpio = nc)
-
-        print("NotConnected promotes to Gpio: success")
-    "#
-});
-
-snapshot_eval!(net_cannot_promote_to_not_connected, {
-    "interfaces.zen" => r#"
-        NotConnected = builtin.net_type("NotConnected")
-    "#,
-    "child.zen" => r#"
-        load("interfaces.zen", "NotConnected")
-
-        nc = io(NotConnected)
-
-        Component(
-            name = "R1",
-            footprint = "TEST:0402",
-            pin_defs = {"1": "1"},
-            pins = {"1": nc},
-        )
-    "#,
-    "test.zen" => r#"
-        Child = Module("child.zen")
-
-        # Net should NOT promote to NotConnected - this should fail
-        sig = Net("SIG")
-        Child(name = "child", nc = sig)
-    "#
-});
-
-snapshot_eval!(power_cannot_promote_to_not_connected, {
-    "interfaces.zen" => r#"
-        Power = builtin.net_type("Power")
-        NotConnected = builtin.net_type("NotConnected")
-    "#,
-    "child.zen" => r#"
-        load("interfaces.zen", "NotConnected")
-
-        nc = io(NotConnected)
-
-        Component(
-            name = "R1",
-            footprint = "TEST:0402",
-            pin_defs = {"1": "1"},
-            pins = {"1": nc},
-        )
-    "#,
-    "test.zen" => r#"
-        load("interfaces.zen", "Power")
-
-        Child = Module("child.zen")
-
-        # Power should NOT promote to NotConnected - this should fail
-        vcc = Power("VCC")
-        Child(name = "child", nc = vcc)
-    "#
-});
-
-snapshot_eval!(ground_cannot_promote_to_not_connected, {
-    "interfaces.zen" => r#"
-        Ground = builtin.net_type("Ground")
-        NotConnected = builtin.net_type("NotConnected")
-    "#,
-    "child.zen" => r#"
-        load("interfaces.zen", "NotConnected")
-
-        nc = io(NotConnected)
-
-        Component(
-            name = "R1",
-            footprint = "TEST:0402",
-            pin_defs = {"1": "1"},
-            pins = {"1": nc},
-        )
-    "#,
-    "test.zen" => r#"
-        load("interfaces.zen", "Ground")
-
-        Child = Module("child.zen")
-
-        # Ground should NOT promote to NotConnected - this should fail
-        gnd = Ground("GND")
-        Child(name = "child", nc = gnd)
-    "#
-});
-
-snapshot_eval!(io_default_not_connected_promotes_to_net, {
-    "interfaces.zen" => r#"
-        NotConnected = builtin.net_type("NotConnected")
-    "#,
-    "child.zen" => r#"
-        load("interfaces.zen", "NotConnected")
-
-        # io() with optional=True and default=NotConnected() should promote to Net
-        MH = io(Net, optional = True, default = NotConnected("MH_NC"))
-
-        Component(
-            name = "R1",
-            footprint = "TEST:0402",
-            pin_defs = {"1": "1"},
-            pins = {"1": MH},
-        )
-    "#,
-    "test.zen" => r#"
-        Child = Module("child.zen")
-
-        # Instantiate without providing MH - should use default NotConnected promoted to Net
-        Child(name = "child")
-
-        print("io() default NotConnected promotes to Net: success")
     "#
 });
 
@@ -760,49 +515,7 @@ fn loaded_net_field_nullable_voltage_coerces_from_string() {
 }
 
 #[test]
-fn net_constructor_net_keyword_warns_and_preserves_behavior() {
-    let result = eval_zen(vec![(
-        "test.zen".to_string(),
-        r#"
-            Power = builtin.net_type("Power")
-
-            other_net = Net("SIG")
-            power = Power(NET=other_net)
-
-            check(power.name == "SIG", "NET= cast should preserve the base net name")
-        "#
-        .to_string(),
-    )]);
-
-    assert!(
-        !result.diagnostics.has_errors(),
-        "did not expect errors, got: {:?}",
-        result.diagnostics
-    );
-
-    let warnings = result.diagnostics.warnings();
-    let warning = warnings
-        .iter()
-        .find(|diag| {
-            diag.downcast_error_ref::<CategorizedDiagnostic>()
-                .is_some_and(|c| c.kind == "deprecated.net_constructor_kwarg")
-        })
-        .expect("expected NET= deprecation warning");
-
-    assert_eq!(
-        warning.body,
-        "Power() keyword argument `NET=` is deprecated; use the positional form `Power(other_net)` instead"
-    );
-    assert_eq!(warning.path, "test.zen");
-    assert!(
-        warning.span.is_some(),
-        "expected NET= deprecation warning to include a source span, got: {:?}",
-        warning
-    );
-}
-
-#[test]
-fn net_constructor_positional_cast_does_not_warn() {
+fn net_constructor_positional_cast_preserves_behavior() {
     let result = eval_zen(vec![(
         "test.zen".to_string(),
         r#"
@@ -810,6 +523,14 @@ fn net_constructor_positional_cast_does_not_warn() {
 
             other_net = Net("SIG")
             power = Power(other_net)
+
+            Component(
+                name = "U1",
+                footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod"),
+                pin_defs = {"P1": "1"},
+                pins = {"P1": power},
+                skip_bom = True,
+            )
 
             check(power.name == "SIG", "positional cast should preserve the base net name")
         "#
@@ -821,12 +542,14 @@ fn net_constructor_positional_cast_does_not_warn() {
         "did not expect errors, got: {:?}",
         result.diagnostics
     );
+
+    let eval_output = result.output.expect("expected eval output");
+    let sch_result = eval_output.to_schematic_with_diagnostics();
     assert!(
-        !result.diagnostics.warnings().iter().any(|diag| {
-            diag.downcast_error_ref::<CategorizedDiagnostic>()
-                .is_some_and(|c| c.kind == "deprecated.net_constructor_kwarg")
-        }),
-        "did not expect NET= deprecation warning, got: {:?}",
-        result.diagnostics.warnings()
+        !sch_result.diagnostics.has_errors(),
+        "schematic conversion failed: {:?}",
+        sch_result.diagnostics
     );
+    let schematic = sch_result.output.expect("expected schematic output");
+    assert_eq!(schematic.nets["SIG"].kind, "Net");
 }

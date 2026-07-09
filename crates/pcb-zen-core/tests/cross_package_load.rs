@@ -20,9 +20,10 @@ use std::sync::Arc;
 fn setup_cross_package_workspace(
     repository: Option<&str>,
     board_deps: BTreeMap<String, pcb_zen_core::config::DependencySpec>,
+    include_target_in_frozen_resolution: bool,
 ) -> (Arc<dyn FileProvider>, ResolutionResult, PathBuf) {
     let workspace_root = PathBuf::from("/workspace");
-    let stdlib_root = workspace_root.join(".pcb/stdlib");
+    let stdlib_root = pcb_zen_core::workspace_stdlib_root(&workspace_root);
     let mut files = common::stdlib_test_files_at(&workspace_root);
 
     // modules/Led/Led.zen — the target package
@@ -106,35 +107,65 @@ check(LedValue == "hello from Led", "should load from Led")
         cache_dir: PathBuf::new(),
         config: None,
         packages,
-        lockfile: None,
         errors: vec![],
     };
 
-    // Build resolution maps
-    let mut package_resolutions: HashMap<PathBuf, BTreeMap<String, PathBuf>> = HashMap::new();
-
     // Board's resolution map: only include Led if it's a declared dependency
-    let mut board_deps_map = common::default_test_kicad_resolution_map();
+    let mut board_deps_map = BTreeMap::new();
     if !board_deps.is_empty() {
         board_deps_map.insert(led_url.clone(), PathBuf::from("/workspace/modules/Led"));
     }
-    package_resolutions.insert(PathBuf::from("/workspace/boards/Main"), board_deps_map);
 
-    // Led and stdlib use the default KiCad asset deps in tests.
-    package_resolutions.insert(
-        PathBuf::from("/workspace/modules/Led"),
-        common::default_test_kicad_resolution_map(),
-    );
-    package_resolutions.insert(stdlib_root, common::default_test_kicad_resolution_map());
+    let mut frozen_packages = BTreeMap::from([
+        (
+            PathBuf::from("/workspace/boards/Main"),
+            pcb_zen_core::resolution::FrozenPackage {
+                identity: pcb_zen_core::resolution::FrozenPackageIdentity::Workspace(
+                    board_url.clone(),
+                ),
+                deps: board_deps_map,
+                parts: Vec::new(),
+            },
+        ),
+        (
+            stdlib_root,
+            pcb_zen_core::resolution::FrozenPackage {
+                identity: pcb_zen_core::resolution::FrozenPackageIdentity::Stdlib,
+                deps: BTreeMap::new(),
+                parts: Vec::new(),
+            },
+        ),
+        (
+            workspace_root.clone(),
+            pcb_zen_core::resolution::FrozenPackage {
+                identity: pcb_zen_core::resolution::FrozenPackageIdentity::Workspace(
+                    "github.com/myorg/project".to_string(),
+                ),
+                deps: BTreeMap::new(),
+                parts: Vec::new(),
+            },
+        ),
+    ]);
+    if include_target_in_frozen_resolution {
+        frozen_packages.insert(
+            PathBuf::from("/workspace/modules/Led"),
+            pcb_zen_core::resolution::FrozenPackage {
+                identity: pcb_zen_core::resolution::FrozenPackageIdentity::Workspace(led_url),
+                deps: BTreeMap::new(),
+                parts: Vec::new(),
+            },
+        );
+    }
 
-    // Workspace root resolution map
-    package_resolutions.insert(workspace_root, common::default_test_kicad_resolution_map());
-
-    let resolution = ResolutionResult::native(
+    let resolution = ResolutionResult::frozen(
         workspace_info,
-        package_resolutions,
-        HashMap::new(),
-        false,
+        BTreeMap::from([(
+            board_url.clone(),
+            pcb_zen_core::resolution::FrozenResolutionMap {
+                selected_remote: BTreeMap::new(),
+                packages: frozen_packages,
+            },
+        )]),
         HashMap::new(),
     );
 
@@ -151,7 +182,7 @@ fn cross_package_relative_load_with_repository() {
     )]);
 
     let (file_provider, resolution, main_path) =
-        setup_cross_package_workspace(Some("github.com/myorg/project"), deps);
+        setup_cross_package_workspace(Some("github.com/myorg/project"), deps, true);
 
     let result = EvalContext::new(file_provider, resolution)
         .set_source_path(main_path)
@@ -176,7 +207,7 @@ fn cross_package_relative_load_without_repository() {
         pcb_zen_core::config::DependencySpec::Version("0.1.0".to_string()),
     )]);
 
-    let (file_provider, resolution, main_path) = setup_cross_package_workspace(None, deps);
+    let (file_provider, resolution, main_path) = setup_cross_package_workspace(None, deps, true);
 
     let result = EvalContext::new(file_provider, resolution)
         .set_source_path(main_path)
@@ -200,7 +231,7 @@ fn cross_package_relative_load_undeclared_dependency() {
     let deps = BTreeMap::new();
 
     let (file_provider, resolution, main_path) =
-        setup_cross_package_workspace(Some("github.com/myorg/project"), deps);
+        setup_cross_package_workspace(Some("github.com/myorg/project"), deps, true);
 
     let result = EvalContext::new(file_provider, resolution)
         .set_source_path(main_path)
@@ -218,6 +249,32 @@ fn cross_package_relative_load_undeclared_dependency() {
     assert!(
         has_dep_error,
         "Should get 'No declared dependency matches' error, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+#[cfg(not(target_os = "windows"))]
+fn cross_package_relative_load_undeclared_dependency_missing_from_frozen_resolution() {
+    let deps = BTreeMap::new();
+
+    let (file_provider, resolution, main_path) =
+        setup_cross_package_workspace(Some("github.com/myorg/project"), deps, false);
+
+    let result = EvalContext::new(file_provider, resolution)
+        .set_source_path(main_path)
+        .eval();
+
+    assert!(
+        !result.is_success(),
+        "Cross-package load should fail even when stale resolution omitted the target package"
+    );
+
+    let errors: Vec<String> = result.diagnostics.iter().map(|d| d.to_string()).collect();
+    let has_sync_error = errors.iter().any(|e| e.contains("Run `pcb sync`"));
+    assert!(
+        has_sync_error,
+        "Should ask the user to run `pcb sync`, got: {:?}",
         errors
     );
 }

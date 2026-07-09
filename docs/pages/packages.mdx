@@ -5,7 +5,7 @@ description: "Package management, workspaces, and dependency resolution"
 
 A version identifies a specific, immutable snapshot of a package's source code.
 Versions give engineers a precise language for specifying requirements: when a
-package declares a dependency on `stdlib@0.3.2`, any engineer building it will
+package declares a dependency on `component-lib@0.3.2`, any engineer building it will
 use exactly that version, producing identical results regardless of when or where
 the build runs.
 
@@ -77,7 +77,7 @@ The package system achieves repeatability with **Minimal Version Selection
 (MVS)** and hydrated `pcb.toml` manifests. MVS selects the minimum version that
 satisfies the dependency graph. `pcb sync` records that selected graph in
 manifests, including pseudo-versions for branch and commit dependencies, so
-locked and offline builds reuse immutable versions.
+read-only and offline builds reuse immutable versions.
 
 ### Cooperation
 
@@ -114,7 +114,7 @@ looks up to eight directory levels deep and treats each descendant directory wit
 
 ```toml
 [workspace]
-pcb-version = "0.3"
+pcb-version = "0.4"
 exclude = ["scratch/**", "experiments/old-board"]
 ```
 
@@ -122,14 +122,10 @@ Excluded directories are pruned, so `pcb` neither discovers a package there nor
 searches below it. The tool also always skips generated/cache directories such as
 `.git`, `.pcb`, `vendor`, `target`, `node_modules`, and `fork`.
 
-Older manifests may still contain `[workspace].members`; the field is parsed for
-compatibility but ignored. `pcb sync` removes it when it rewrites the workspace
-manifest.
-
 ## Coexisting Versions
 
 Sometimes breaking changes are necessary. A component library might need to
-restructure its pin definitions, or the stdlib might change how units are
+restructure its pin definitions, or a shared component library might change how interfaces are
 represented. When this happens, packages that depend on the old API cannot
 immediately upgrade—they need time to adapt.
 
@@ -139,15 +135,15 @@ dependency graph contains:
 ```toml
 # Library X
 [dependencies]
-"github.com/diodeinc/stdlib" = "0.3"
+"github.com/acme/component-lib" = "0.3"
 
 # Library Y
 [dependencies]
-"github.com/diodeinc/stdlib" = "1.0"
+"github.com/acme/component-lib" = "1.0"
 ```
 
 Both libraries can build together. The system maintains separate copies of
-`stdlib@0.3.x` and `stdlib@1.0.x`, each used by the packages that require them.
+`component-lib@0.3.x` and `component-lib@1.0.x`, each used by the packages that require them.
 Types and values from different major versions are distinct and cannot be mixed.
 
 This approach has two key benefits:
@@ -156,12 +152,12 @@ This approach has two key benefits:
 validating each migration before moving to the next. The old version remains
 available as long as any package needs it.
 
-**Diamond dependencies work.** If Board A uses Library X (stdlib 0.3) and Library Y
-(stdlib 1.0), both libraries function correctly. Library X sees stdlib 0.3 types,
-Library Y sees stdlib 1.0 types, and the board sees whatever version it declares.
+**Diamond dependencies work.** If Board A uses Library X (component-lib 0.3) and Library Y
+(component-lib 1.0), both libraries function correctly. Library X sees component-lib 0.3 types,
+Library Y sees component-lib 1.0 types, and the board sees whatever version it declares.
 
 The limitation is that types from different major versions may be incompatible. A
-`Net` from stdlib 0.3 cannot be passed to a function expecting a stdlib 1.0 `Net`.
+`Foo` from component-lib 0.3 cannot be passed to a function expecting a component-lib 1.0 `Foo`.
 Major versions represent potential breaking changes, and the system cannot guarantee
 compatibility across that boundary.
 
@@ -191,15 +187,15 @@ Consider this dependency graph:
 
 ```
 Board
-├── stdlib >= 0.3
+├── component-lib >= 0.3
 └── regulator >= 1.0
-    └── stdlib >= 0.3.2
+    └── component-lib >= 0.3.2
 ```
 
-The Board requires `stdlib >= 0.3.0`. The regulator requires `stdlib >= 0.3.2`.
-MVS selects `stdlib@0.3.2`—the minimum version that satisfies both constraints.
+The Board requires `component-lib >= 0.3.0`. The regulator requires `component-lib >= 0.3.2`.
+MVS selects `component-lib@0.3.2`—the minimum version that satisfies both constraints.
 
-Even if `stdlib@0.3.9` exists and is compatible, MVS chooses 0.3.2 because that's
+Even if `component-lib@0.3.9` exists and is compatible, MVS chooses 0.3.2 because that's
 what the dependencies explicitly require. The existence of newer versions is
 irrelevant.
 
@@ -208,7 +204,7 @@ irrelevant.
 This seems counterintuitive. Wouldn't you want the newest compatible version with
 all its bug fixes? The key insight is that **the author tested with specific versions**.
 
-When the regulator author published version 1.0.0, they tested it with `stdlib@0.3.2`.
+When the regulator author published version 1.0.0, they tested it with `component-lib@0.3.2`.
 They know it works with that version. They *hope* it works with 0.3.9, but they
 haven't tested it. By selecting the minimum, MVS chooses the versions that were
 actually tested together.
@@ -217,7 +213,7 @@ If you want newer versions, you explicitly upgrade:
 
 ```toml
 [dependencies]
-"github.com/diodeinc/stdlib" = "0.3.9"
+"github.com/acme/component-lib" = "0.3.9"
 ```
 
 Now MVS selects 0.3.9 because *you* require it. You're taking responsibility for
@@ -254,14 +250,14 @@ every place it's required and take the highest version. That's it.
 **Example with multiple semver families:**
 
 ```
-WV0001: stdlib = 0.2.13
-WV0002: stdlib = 0.3.2, regulator = 1.0
-WV0003: stdlib = 0.3.1
-regulator@1.0.0: stdlib = 0.3.0
+WV0001: component-lib = 0.2.13
+WV0002: component-lib = 0.3.2, regulator = 1.0
+WV0003: component-lib = 0.3.1
+regulator@1.0.0: component-lib = 0.3.0
 
 Result:
-  v0.2.x family → stdlib@0.2.13
-  v0.3.x family → stdlib@0.3.2 (max of 0.3.2, 0.3.1, 0.3.0)
+  v0.2.x family → component-lib@0.2.13
+  v0.3.x family → component-lib@0.3.2 (max of 0.3.2, 0.3.1, 0.3.0)
 ```
 
 Both versions coexist in the final build because they're in different semver families.
@@ -271,7 +267,7 @@ Both versions coexist in the final build because they're in different semver fam
 Import paths serve as globally unique package identifiers:
 
 ```python
-load("github.com/diodeinc/stdlib/units.zen", "Voltage")
+load("@stdlib/units.zen", "Voltage")
 load("github.com/myorg/components/capacitor.zen", "Capacitor")
 ```
 
@@ -291,7 +287,6 @@ manifest declares which version of each package to use:
 
 ```toml
 [dependencies]
-"github.com/diodeinc/stdlib" = "0.3"
 "github.com/diodeinc/registry/components/ti/tps54331" = "1.0"
 ```
 
@@ -315,59 +310,14 @@ Example:
 
 [dependencies.indirect]
 "github.com/diodeinc/registry/components/TPS54331@1" = "1.0.2"
-"gitlab.com/kicad/libraries/kicad-footprints@9" = "9.0.3"
-"gitlab.com/kicad/libraries/kicad-symbols@9" = "9.0.3"
+"github.com/diodeinc/registry/modules/Feedback@1" = "1.1.0"
 ```
 
-The `@1` and `@9` suffixes are compatibility lanes. They allow multiple
+The `@1` suffix is a compatibility lane. It allows multiple
 incompatible versions of the same package path to coexist while keeping the
 selected version exact.
 
 Do not edit `[dependencies.indirect]` by hand. Commit hydrated `pcb.toml` files.
-
-## KiCad-Style Libraries
-
-KiCad symbol/footprint/3D relationships are configured at workspace root with
-`[[workspace.kicad_library]]` entries. If omitted, the workspace defaults to two
-entries: KiCad `9.0.3` and KiCad `10.0.0`.
-
-```toml
-[[workspace.kicad_library]]
-version = "9.0.3" # concrete version; major is used for symbol↔footprint matching
-symbols = "gitlab.com/kicad/libraries/kicad-symbols"
-footprints = "gitlab.com/kicad/libraries/kicad-footprints"
-models = { KICAD9_3DMODEL_DIR = "gitlab.com/kicad/libraries/kicad-packages3D" }
-parts = "https://kicad-mirror.api.diode.computer/kicad-parts-{version}.toml"
-http_mirror = "https://kicad-mirror.api.diode.computer/{repo_name}-{version}.tar.zst"
-```
-
-The default KiCad 10 entry uses the same shape, but with:
-
-```toml
-[[workspace.kicad_library]]
-version = "10.0.0"
-symbols = "gitlab.com/kicad/libraries/kicad-symbols"
-footprints = "gitlab.com/kicad/libraries/kicad-footprints"
-models = { KICAD10_3DMODEL_DIR = "gitlab.com/kicad/libraries/kicad-packages3D" }
-parts = "https://kicad-mirror.api.diode.computer/kicad-parts-{version}.toml"
-http_mirror = "https://kicad-mirror.api.diode.computer/{repo_name}-{version}.tar.zst"
-```
-
-`parts` is optional. When set, the file is fetched alongside the selected symbols repo and parsed as a virtual `pcb.toml` containing `parts = [...]` entries for manifest-backed symbol→part inheritance. It supports the same `{repo}`, `{repo_name}`, `{version}`, and `{major}` placeholders as `http_mirror`.
-
-`http_mirror` is optional and supports `{repo}`, `{repo_name}`, `{version}`, and `{major}` placeholders.
-
-KiCad aliases in `.zen` files are reconciled by `pcb sync`. Transitive KiCad
-assets are written to `[dependencies.indirect]` using lane-qualified keys:
-
-```toml
-[dependencies.indirect]
-"gitlab.com/kicad/libraries/kicad-footprints@9" = "9.0.3"
-"gitlab.com/kicad/libraries/kicad-packages3D@9" = "9.0.3"
-"gitlab.com/kicad/libraries/kicad-symbols@9" = "9.0.3"
-```
-
-Then regular dependency aliases apply (for example `@kicad-symbols`, `@kicad-footprints`).
 
 ## Vendoring (`[workspace].vendor`)
 
@@ -378,9 +328,12 @@ Vendoring policy is controlled by the root workspace manifest:
 vendor = ["github.com/myorg/**"]
 ```
 
-- `pcb build` and `pcb publish` use the same `[workspace].vendor` patterns.
+- `pcb publish` uses `[workspace].vendor` patterns when staging release sources.
+- `pcb sync` vendors packages matched by `[workspace].vendor`.
 - `pcb vendor` without `--all` uses `[workspace].vendor`.
 - `pcb vendor --all` vendors everything.
+- Read commands such as `pcb build`, `pcb layout`, `pcb test`, `pcb open`, and
+  `pcb bom` do not change `vendor/` or rewrite dependency manifests.
 
 ## Workspace Name (`[workspace].name`)
 
@@ -406,6 +359,17 @@ endpoint = "diode.computer"
 - This applies to workspace-aware commands such as `pcb auth`, `pcb bom`, `pcb publish`, `pcb preview`, and routing flows.
 - Authentication is scoped per resolved endpoint, so logging into one workspace endpoint does not overwrite tokens for another.
 
+## BOM Matching (`[workspace.bom]`)
+
+Workspace manifests can opt into strict BOM matching for `pcb bom` availability lookups:
+
+```toml
+[workspace.bom]
+strict = true
+```
+
+When enabled, `pcb bom` asks the BOM service to require exact MPN matches. The default is `false`, which preserves the legacy fuzzy matching behavior.
+
 ## Registry Search Scope
 
 Registry-backed `pcb search` defaults to the public Diode registry and registries in the workspace configured by `[workspace].repository`.
@@ -424,10 +388,10 @@ Format: `v<base>-0.<timestamp>-<commit>`
 ```toml
 [dependencies]
 # Branch reference - resolved to pseudo-version
-"github.com/diodeinc/stdlib" = { branch = "main" }
+"github.com/acme/component-lib" = { branch = "main" }
 
 # Specific commit
-"github.com/diodeinc/stdlib" = { rev = "a1b2c3d4" }
+"github.com/acme/component-lib" = { rev = "a1b2c3d4" }
 ```
 
 When resolved, these become pseudo-versions like:
@@ -444,7 +408,7 @@ If the package has never been tagged, pseudo-versions start in the `0.1.1`
 family (for example `0.1.1-0.<timestamp>-<commit>`), one patch above the
 initial unpublished release version `0.1.0`.
 
-Pseudo-versions participate fully in MVS. If one package requires `stdlib@0.3.14`
+Pseudo-versions participate fully in MVS. If one package requires `component-lib@0.3.14`
 and another requires the pseudo-version above, MVS selects the pseudo-version
 (it's higher). This enables testing unreleased fixes without breaking version
 resolution.
@@ -456,34 +420,34 @@ code. For production builds, prefer tagged releases.
 
 ### pcb migrate
 
-Upgrades an older project to the supported manifest format. Updates `pcb.toml`
-manifests and rewrites `.zen` files to use the current import syntax. Older
-workspace formats are no longer supported by `pcb build`, `pcb layout`,
-`pcb publish`, etc.
+Runs project migrations using the latest stable `pcbc` toolchain, regardless of
+the workspace's current `pcb-version` lane. After all migrations succeed, the
+command updates `[workspace].pcb-version` in `pcb.toml` to the target toolchain
+lane.
 
 ```bash
-pcb migrate                  # Migrate current workspace
+pcb migrate
 pcb migrate ./path/to/workspace
 ```
-
-The command detects the workspace root, converts manifests and import paths, and
-hydrates dependency manifests.
-
-Review changes with `git diff` before committing.
 
 ### pcb sync
 
 Reconciles imports and hydrates package manifests. Run this after adding or
-removing imports, changing dependency versions, or migrating an older project.
+removing imports or changing dependency versions.
 
 ```bash
 pcb sync                    # Sync packages under the current workspace/package
-pcb sync --offline          # Use only already cached package data
+pcb sync --check            # CI guard: fail if pcb.toml or vendor/ is out of sync
 pcb sync -v                 # Print changed manifests
 ```
 
 The command also downloads selected packages into the cache and vendors packages
 matched by `[workspace].vendor`.
+
+`pcb sync --check` always verifies the whole workspace, regardless of the
+current directory, and writes neither `pcb.toml` nor `vendor/`. It detects
+missing or stale vendored package versions; it does not verify the contents of
+vendored versions that are already present.
 
 ### pcb add
 
@@ -507,11 +471,11 @@ Builds a board or workspace package.
 pcb build                    # Build default board
 pcb build WV0002.zen         # Build a specific board file
 pcb build --offline          # Build using only cached/vendored packages
-pcb build --locked           # Do not rewrite manifests; recommended for CI
 ```
 
-`--locked` checks that the hydrated state is sufficient and does not rewrite
-`pcb.toml`.
+`pcb build` checks that the hydrated state is sufficient and does not rewrite
+`pcb.toml` or `vendor/`. Use `pcb sync` or `pcb vendor` to update dependency
+state.
 
 ### pcb list
 
@@ -528,7 +492,7 @@ lane and the latest newer breaking lane when available. It does not update manif
 
 ### pcb update
 
-`pcb update` is deprecated. Use `pcb add -u` instead.
+`pcb update` is disabled. Use `pcb add -u` instead.
 
 ```bash
 pcb add -u                   # Upgrade all direct remote dependencies

@@ -8,14 +8,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use semver::Version;
-
 use crate::FileProvider;
 use crate::config::{
-    KicadLibraryConfig, Lockfile, PcbToml, WorkspaceConfig, find_workspace_root, parse_pcb_version,
-    pcb_version_from_cargo, pcb_version_is_older, stdlib_pinned_kicad_library,
+    PcbToml, WorkspaceConfig, find_workspace_root, parse_pcb_version, pcb_version_from_cargo,
+    pcb_version_is_older,
 };
-use crate::kicad_library::validate_kicad_library_config;
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     *value == T::default()
@@ -154,9 +151,6 @@ pub struct WorkspaceInfo {
     pub config: Option<PcbToml>,
     /// Discovered packages keyed by URL
     pub packages: BTreeMap<String, WorkspacePackage>,
-    /// Optional lockfile
-    #[serde(skip)]
-    pub lockfile: Option<Lockfile>,
     /// Discovery errors
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<DiscoveryError>,
@@ -194,28 +188,6 @@ impl WorkspaceInfo {
             .unwrap_or_default()
     }
 
-    /// Concrete versions for stdlib's implicit managed KiCad asset dependencies.
-    pub fn stdlib_asset_dep_versions(&self) -> BTreeMap<String, Version> {
-        let entry = stdlib_pinned_kicad_library();
-        let version = entry.version.clone();
-        std::iter::once(entry.symbols)
-            .chain(std::iter::once(entry.footprints))
-            .chain(entry.models.into_values())
-            .map(|repo| (repo, version.clone()))
-            .collect()
-    }
-
-    /// Get configured `[[workspace.kicad_library]]` entries.
-    ///
-    /// Falls back to default KiCad library settings when the workspace section is absent.
-    pub fn kicad_library_entries(&self) -> Vec<KicadLibraryConfig> {
-        self.config
-            .as_ref()
-            .and_then(|c| c.workspace.as_ref())
-            .map(|w| w.kicad_library.clone())
-            .unwrap_or_else(|| WorkspaceConfig::default().kicad_library)
-    }
-
     /// Iterate all manifest configs in the workspace (root first, then packages).
     pub fn manifests(&self) -> impl Iterator<Item = &PcbToml> {
         self.config
@@ -245,6 +217,38 @@ impl WorkspaceInfo {
         self.workspace_base_url()
             .as_deref()
             .is_some_and(|base| package_url_covers(base, url))
+    }
+
+    /// Return the most specific workspace package URL that contains `url`.
+    pub fn package_url_for_url(&self, url: &str) -> Option<&str> {
+        self.packages
+            .keys()
+            .filter(|package_url| package_url_covers(package_url, url))
+            .max_by_key(|package_url| package_url.len())
+            .map(String::as_str)
+    }
+
+    /// Return the most specific workspace package URL that owns `path`.
+    pub fn package_url_for_path(
+        &self,
+        file_provider: &dyn FileProvider,
+        path: &Path,
+    ) -> Option<&str> {
+        let canonical_workspace_root = file_provider
+            .canonicalize(&self.root)
+            .unwrap_or_else(|_| self.root.clone());
+        let canonical_path = file_provider
+            .canonicalize(path)
+            .unwrap_or_else(|_| path.to_path_buf());
+        let workspace_relative = canonical_path
+            .strip_prefix(&canonical_workspace_root)
+            .ok()?;
+
+        self.packages
+            .iter()
+            .filter(|(_, pkg)| workspace_relative.starts_with(&pkg.rel_path))
+            .max_by_key(|(_, pkg)| pkg.rel_path.as_os_str().len())
+            .map(|(url, _)| url.as_str())
     }
 
     /// Get optional subpath within repository
@@ -324,14 +328,15 @@ impl WorkspaceInfo {
 
 /// Find single .zen file in a directory using a FileProvider
 fn find_single_zen_file<F: FileProvider>(file_provider: &F, dir: &Path) -> Option<String> {
-    let entries = file_provider.list_directory(dir).ok()?;
+    let entries = file_provider.list_directory_entries(dir).ok()?;
     let zen_files: Vec<_> = entries
         .into_iter()
-        .filter(|p| !file_provider.is_directory(p) && p.extension().is_some_and(|ext| ext == "zen"))
+        .filter(|e| !e.is_dir && e.path.extension().is_some_and(|ext| ext == "zen"))
         .collect();
 
     if zen_files.len() == 1 {
         zen_files[0]
+            .path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
     } else {
@@ -379,10 +384,11 @@ fn discover_package_dirs<F: FileProvider>(
     errors: &mut Vec<DiscoveryError>,
 ) -> Vec<(PathBuf, PathBuf)> {
     let mut result = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
+    // (directory, depth relative to root)
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
 
-    while let Some(dir) = stack.pop() {
-        let entries = match file_provider.list_directory(&dir) {
+    while let Some((dir, depth)) = stack.pop() {
+        let entries = match file_provider.list_directory_entries(&dir) {
             Ok(e) => e,
             Err(e) => {
                 if dir != root {
@@ -395,42 +401,36 @@ fn discover_package_dirs<F: FileProvider>(
             }
         };
 
+        // The listing tells us both whether this directory is a package and
+        // which subdirectories to visit, without any per-entry stat calls.
+        if depth > 0
+            && entries
+                .iter()
+                .any(|e| !e.is_dir && e.path.file_name().is_some_and(|n| n == "pcb.toml"))
+            && let Ok(rel_path) = dir.strip_prefix(root)
+        {
+            result.push((dir.clone(), rel_path.to_path_buf()));
+        }
+
+        if depth == WORKSPACE_DISCOVERY_MAX_DEPTH {
+            continue;
+        }
+
         for entry in entries {
-            if !file_provider.is_directory(&entry) {
-                continue;
-            }
-
-            if is_builtin_excluded_dir(&entry) {
-                continue;
-            }
-
             // Never descend into symlinks (e.g., .pcb/cache contains symlinked packages)
-            if file_provider.is_symlink(&entry) {
+            if !entry.is_dir || entry.is_symlink || is_builtin_excluded_dir(&entry.path) {
                 continue;
             }
 
-            let Ok(rel_path) = entry.strip_prefix(root) else {
+            let Ok(rel_path) = entry.path.strip_prefix(root) else {
                 continue;
             };
 
-            let depth = rel_path.components().count();
-            if depth > WORKSPACE_DISCOVERY_MAX_DEPTH {
+            if exclude_set.is_match(rel_path_string(rel_path)) {
                 continue;
             }
 
-            let rel_str = rel_path_string(rel_path);
-
-            if exclude_set.is_match(&rel_str) {
-                continue;
-            }
-
-            if file_provider.exists(&entry.join("pcb.toml")) {
-                result.push((entry.clone(), rel_path.to_path_buf()));
-            }
-
-            if depth < WORKSPACE_DISCOVERY_MAX_DEPTH {
-                stack.push(entry);
-            }
+            stack.push((entry.path, depth + 1));
         }
     }
 
@@ -475,48 +475,9 @@ pub fn get_workspace_info<F: FileProvider>(
         None
     };
 
-    if let Some(cfg) = &config
-        && !cfg.is_v2()
-    {
-        let mut reasons: Vec<&'static str> = Vec::new();
-        if cfg
-            .workspace
-            .as_ref()
-            .is_some_and(|w| w.pcb_version.is_none())
-        {
-            reasons.push("missing `[workspace].pcb-version`");
-        }
-        if !cfg.packages.is_empty() {
-            reasons.push("uses legacy `[packages]` aliases");
-        }
-        if cfg.module.is_some() {
-            reasons.push("uses legacy `[module]` configuration");
-        }
-
-        let src = config_source.as_deref().unwrap_or(pcb_toml_path.as_path());
-        let mut msg = format!(
-            "Unsupported legacy (V1) pcb manifest at {}\n  \
-                This toolchain only supports V2 manifests.",
-            src.display()
-        );
-        if !reasons.is_empty() {
-            msg.push_str(&format!("\n  Detected: {}", reasons.join(", ")));
-        }
-        msg.push_str("\n  Run `pcb migrate` to upgrade this workspace to V2.");
-        return Err(anyhow::anyhow!(msg));
-    }
-
     if let Some(cfg) = &config {
         let src = config_source.as_deref().unwrap_or(pcb_toml_path.as_path());
         validate_workspace_pcb_version(cfg, src)?;
-    }
-
-    if let Some(cfg) = &config
-        && let Some(workspace) = cfg.workspace.as_ref()
-    {
-        for entry in &workspace.kicad_library {
-            validate_kicad_library_config(entry)?;
-        }
     }
 
     let workspace_config = config
@@ -558,15 +519,6 @@ pub fn get_workspace_info<F: FileProvider>(
                     continue;
                 }
             };
-
-            if !pkg_config.is_v2() {
-                errors.push(DiscoveryError {
-                    path: pkg_toml_path,
-                    error: "legacy (V1) package manifest is no longer supported; run `pcb migrate`"
-                        .to_string(),
-                });
-                continue;
-            }
 
             if pkg_config.is_workspace() {
                 errors.push(DiscoveryError {
@@ -622,16 +574,6 @@ pub fn get_workspace_info<F: FileProvider>(
         );
     }
 
-    // Load lockfile - treat parse errors as hard errors, missing file as None
-    let lockfile_path = workspace_root.join("pcb.sum");
-    let lockfile = match file_provider.read_file(&lockfile_path) {
-        Ok(content) => Some(Lockfile::parse(&content)?),
-        Err(crate::FileProviderError::NotFound(_)) => None,
-        Err(e) => {
-            return Err(anyhow::anyhow!("Failed to read pcb.sum: {}", e));
-        }
-    };
-
     // Populate discovered zen paths for boards without explicit paths
     for pkg in packages.values_mut() {
         if let Some(board) = &mut pkg.config.board
@@ -647,7 +589,6 @@ pub fn get_workspace_info<F: FileProvider>(
         cache_dir: file_provider.cache_dir(),
         config,
         packages,
-        lockfile,
         errors,
     })
 }
@@ -656,59 +597,9 @@ pub fn get_workspace_info<F: FileProvider>(
 mod tests {
     use super::*;
     use crate::InMemoryFileProvider;
-    use crate::config::{
-        DEFAULT_KICAD_HTTP_MIRROR_TEMPLATE, parse_pcb_version, pcb_version_from_cargo,
-    };
+    use crate::config::{parse_pcb_version, pcb_version_from_cargo};
     use std::collections::HashMap;
     use std::path::Path;
-
-    #[test]
-    fn test_rejects_invalid_kicad_library_version() {
-        let files = HashMap::from([(
-            "/repo/pcb.toml".to_string(),
-            r#"
-[workspace]
-pcb-version = "0.3"
-
-[[workspace.kicad_library]]
-version = "9"
-symbols = "gitlab.com/kicad/libraries/kicad-symbols"
-footprints = "gitlab.com/kicad/libraries/kicad-footprints"
-"#
-            .to_string(),
-        )]);
-        let provider = InMemoryFileProvider::new(files);
-
-        get_workspace_info(&provider, Path::new("/repo"))
-            .expect_err("expected invalid [[workspace.kicad_library]].version to fail parse");
-    }
-
-    #[test]
-    fn test_kicad_library_defaults_apply_without_workspace_section() {
-        let files = HashMap::from([(
-            "/repo/pcb.toml".to_string(),
-            r#"
-[dependencies]
-"github.com/diodeinc/stdlib" = "0.5.11"
-"#
-            .to_string(),
-        )]);
-        let provider = InMemoryFileProvider::new(files);
-
-        let info = get_workspace_info(&provider, Path::new("/repo")).unwrap();
-        let entries = info.kicad_library_entries();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(
-            entries[0].http_mirror.as_deref(),
-            Some(DEFAULT_KICAD_HTTP_MIRROR_TEMPLATE)
-        );
-        assert_eq!(entries[1].version, Version::new(10, 0, 0));
-        assert_eq!(
-            info.stdlib_asset_dep_versions()
-                .get("gitlab.com/kicad/libraries/kicad-symbols"),
-            Some(&Version::new(9, 0, 3))
-        );
-    }
 
     #[test]
     fn test_package_level_workspace_section_is_discovery_error() {
@@ -717,7 +608,7 @@ footprints = "gitlab.com/kicad/libraries/kicad-footprints"
                 "/repo/pcb.toml".to_string(),
                 r#"
 [workspace]
-pcb-version = "0.3"
+pcb-version = "0.4"
 "#
                 .to_string(),
             ),
@@ -725,12 +616,7 @@ pcb-version = "0.3"
                 "/repo/boards/demo/pcb.toml".to_string(),
                 r#"
 [workspace]
-pcb-version = "0.3"
-
-[[workspace.kicad_library]]
-version = "9.0.3"
-symbols = "gitlab.com/kicad/libraries/kicad-symbols"
-footprints = "gitlab.com/kicad/libraries/kicad-footprints"
+pcb-version = "0.4"
 "#
                 .to_string(),
             ),
@@ -753,7 +639,7 @@ footprints = "gitlab.com/kicad/libraries/kicad-footprints"
                 "/repo/pcb.toml".to_string(),
                 r#"
 [workspace]
-pcb-version = "0.3"
+pcb-version = "0.4"
 "#
                 .to_string(),
             ),
@@ -765,7 +651,7 @@ pcb-version = "0.3"
                 "/repo/boards/demo/.pcb/edit/github.com/example/dep/pcb.toml".to_string(),
                 r#"
 [workspace]
-pcb-version = "0.3"
+pcb-version = "0.4"
 "#
                 .to_string(),
             ),
@@ -779,37 +665,13 @@ pcb-version = "0.3"
     }
 
     #[test]
-    fn test_workspace_members_are_ignored_for_discovery() {
-        let files = HashMap::from([
-            (
-                "/repo/pcb.toml".to_string(),
-                r#"
-[workspace]
-pcb-version = "0.3"
-members = ["boards/*"]
-"#
-                .to_string(),
-            ),
-            (
-                "/repo/modules/Lib/pcb.toml".to_string(),
-                "[dependencies]\n".to_string(),
-            ),
-        ]);
-        let provider = InMemoryFileProvider::new(files);
-
-        let info = get_workspace_info(&provider, Path::new("/repo")).unwrap();
-        assert!(info.errors.is_empty());
-        assert!(info.packages.contains_key("modules/Lib"));
-    }
-
-    #[test]
     fn test_workspace_exclude_prunes_discovery() {
         let files = HashMap::from([
             (
                 "/repo/pcb.toml".to_string(),
                 r#"
 [workspace]
-pcb-version = "0.3"
+pcb-version = "0.4"
 exclude = ["modules/ignored/**"]
 "#
                 .to_string(),
@@ -824,7 +686,7 @@ exclude = ["modules/ignored/**"]
             ),
             (
                 "/repo/modules/ignored/nested/pcb.toml".to_string(),
-                "[workspace]\npcb-version = \"0.3\"\n".to_string(),
+                "[workspace]\npcb-version = \"0.4\"\n".to_string(),
             ),
         ]);
         let provider = InMemoryFileProvider::new(files);
@@ -841,7 +703,7 @@ exclude = ["modules/ignored/**"]
         let files = HashMap::from([
             (
                 "/repo/pcb.toml".to_string(),
-                "[workspace]\npcb-version = \"0.3\"\n".to_string(),
+                "[workspace]\npcb-version = \"0.4\"\n".to_string(),
             ),
             (
                 "/repo/a/b/c/d/e/f/g/h/pcb.toml".to_string(),
@@ -861,12 +723,50 @@ exclude = ["modules/ignored/**"]
     }
 
     #[test]
+    fn test_package_url_for_path_uses_most_specific_package() {
+        let files = HashMap::from([
+            (
+                "/repo/pcb.toml".to_string(),
+                "[workspace]\npcb-version = \"0.4\"\n".to_string(),
+            ),
+            (
+                "/repo/modules/parent/pcb.toml".to_string(),
+                "[dependencies]\n".to_string(),
+            ),
+            (
+                "/repo/modules/parent/child/pcb.toml".to_string(),
+                "[dependencies]\n".to_string(),
+            ),
+            (
+                "/repo/modules/parent/child/board.zen".to_string(),
+                "".to_string(),
+            ),
+        ]);
+        let provider = InMemoryFileProvider::new(files);
+
+        let info = get_workspace_info(&provider, Path::new("/repo")).unwrap();
+
+        assert_eq!(
+            info.package_url_for_path(&provider, Path::new("/repo/modules/parent/child/board.zen")),
+            Some("modules/parent/child")
+        );
+        assert_eq!(
+            info.package_url_for_path(&provider, Path::new("/repo/modules/parent/local.zen")),
+            Some("modules/parent")
+        );
+        assert_eq!(
+            info.package_url_for_path(&provider, Path::new("/repo/modules/parental/board.zen")),
+            None
+        );
+    }
+
+    #[test]
     fn test_workspace_stdlib_dir_uses_patch_path() {
         let files = HashMap::from([(
             "/repo/pcb.toml".to_string(),
             r#"
 [workspace]
-pcb-version = "0.3"
+pcb-version = "0.4"
 
 [patch]
 stdlib = { path = "third_party/stdlib" }
@@ -888,7 +788,7 @@ stdlib = { path = "third_party/stdlib" }
             "/repo/pcb.toml".to_string(),
             r#"
 [workspace]
-pcb-version = "0.3"
+pcb-version = "0.4"
 
 [patch]
 "github.com/diodeinc/stdlib" = { path = "../stdlib-fork" }
@@ -898,7 +798,10 @@ pcb-version = "0.3"
         let provider = InMemoryFileProvider::new(files);
 
         let info = get_workspace_info(&provider, Path::new("/repo")).unwrap();
-        assert_eq!(info.workspace_stdlib_dir(), Path::new("/repo/.pcb/stdlib"));
+        assert_eq!(
+            info.workspace_stdlib_dir(),
+            Path::new("/repo").join(".pcb/stdlib")
+        );
     }
 
     #[test]
@@ -908,7 +811,7 @@ pcb-version = "0.3"
                 "/repo/pcb.toml".to_string(),
                 r#"
 [workspace]
-pcb-version = "0.3"
+pcb-version = "0.4"
 preferred = ["components/preferred-part"]
 "#
                 .to_string(),

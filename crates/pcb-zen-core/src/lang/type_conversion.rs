@@ -4,7 +4,9 @@ use starlark::eval::Evaluator;
 use starlark::values::{Value, ValueLike, float::StarlarkFloat, typing::TypeCompiled};
 
 use crate::lang::r#enum::{EnumType, EnumValue};
-use crate::lang::net::{FrozenNetType, FrozenNetValue, NetType, NetValue};
+use crate::lang::net::{
+    FrozenNetType, FrozenNetValue, NetType, NetValue, compatible_net_type_view,
+};
 
 fn has_type_name<'v>(typ: Value<'v>, names: &[&str]) -> bool {
     names.contains(&typ.get_type()) || names.contains(&typ.to_string().as_str())
@@ -31,23 +33,7 @@ fn try_function_conversion<'v>(
     }
 }
 
-/// Determines if a net type can be promoted/demoted to another.
-///
-/// Net type promotion hierarchy:
-///   - NotConnected -> any type (universal donor)
-///   - Power, Ground, etc. -> Net (demotion to base type)
-///   - Net -> nothing (cannot be promoted)
-///   - Nothing -> NotConnected (NotConnected only accepts NotConnected)
-fn can_convert_net_type<'a>(actual: &'a str, expected: &'a str) -> Option<&'a str> {
-    match (actual, expected) {
-        (a, e) if a == e => None,
-        ("NotConnected", expected) => Some(expected),
-        (_, "Net") => Some("Net"),
-        _ => None,
-    }
-}
-
-/// Attempt to convert a value to another compatible net type.
+/// Return a typed compatibility view of a connected net, preserving identity for canonical kind merge.
 pub(crate) fn try_net_conversion<'v>(
     value: Value<'v>,
     expected_typ: Value<'v>,
@@ -67,13 +53,19 @@ pub(crate) fn try_net_conversion<'v>(
     };
 
     if let Some(nv) = value.downcast_ref::<NetValue>() {
-        if let Some(target) = can_convert_net_type(nv.net_type_name(), expected) {
+        if nv.is_open() {
+            return Ok(None);
+        }
+        if let Some(target) = compatible_net_type_view(nv.net_type_name(), expected) {
             return Ok(Some(nv.with_net_type(target, eval.heap())));
         }
-    } else if let Some(fnv) = value.downcast_ref::<FrozenNetValue>()
-        && let Some(target) = can_convert_net_type(fnv.net_type_name(), expected)
-    {
-        return Ok(Some(fnv.with_net_type(target, eval.heap())));
+    } else if let Some(fnv) = value.downcast_ref::<FrozenNetValue>() {
+        if fnv.is_open() {
+            return Ok(None);
+        }
+        if let Some(target) = compatible_net_type_view(fnv.net_type_name(), expected) {
+            return Ok(Some(fnv.with_net_type(target, eval.heap())));
+        }
     }
 
     Ok(None)

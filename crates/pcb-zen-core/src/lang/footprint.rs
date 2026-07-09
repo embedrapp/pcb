@@ -30,11 +30,11 @@ pub(crate) fn validate_footprints(
                 continue;
             };
             let key = footprint_cache_key(&path, config);
-            let cached = if let Some(cached) = session.get_cached_footprint(&key) {
+            let cached = if let Some(cached) = session.footprint_cache.get(&key) {
                 cached
             } else {
                 let cached = validate_footprint_file(&path, config);
-                session.cache_footprint(key, cached.clone());
+                session.footprint_cache.insert(key, cached.clone());
                 cached
             };
             diagnostics.extend(cached.into_iter().map(|diagnostic| {
@@ -84,11 +84,9 @@ pub(crate) fn footprint_cache_key(
         .file_provider()
         .canonicalize(path)
         .unwrap_or_else(|_| path.to_path_buf());
-    let scope = config.resolution.load_cache_scope_key_for_file(
-        &canonical,
-        config.mvs_v2_root_package.as_deref(),
-        config.file_provider(),
-    );
+    let scope = config
+        .resolution
+        .load_cache_scope_key_for_file(&canonical, config.active_root_package.as_deref());
     (scope, canonical)
 }
 

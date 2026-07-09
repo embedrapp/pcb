@@ -1,0 +1,15 @@
+---
+source: crates/pcbc/tests/build.rs
+assertion_line: 672
+expression: output
+---
+Command: pcbc build standalone.zen
+Exit Code: 1
+
+--- STDOUT ---
+
+--- STDERR ---
+Error: Net is unnamed
+
+✗ standalone.zen: Build failed
+Error: Build failed with errors

@@ -20,7 +20,6 @@ use pcb_sch::kicad_netlist::{try_format_footprint_with_package_roots, write_fp_l
 
 mod effective_netlist;
 mod kicad_project_patch;
-mod model_embed_discovery;
 mod moved;
 mod repair_nets;
 use effective_netlist::{
@@ -460,7 +459,6 @@ pub fn check_layout_sync(
 /// - Runs the pure semantic layout sync check without mutating layout files
 pub fn process_layout(
     schematic: &Schematic,
-    kicad_model_dirs: &BTreeMap<String, PathBuf>,
     use_temp_dir: bool,
     check_mode: bool,
     diagnostics: &mut pcb_zen_core::Diagnostics,
@@ -582,8 +580,7 @@ pub fn process_layout(
         &paths.pcb,
         board_config.as_ref(),
         layout_name.as_deref(),
-        kicad_model_dirs,
-        &footprint_lib_dirs,
+        &component_internal_connectivity_by_path(schematic),
     )?;
 
     // Add sync diagnostics from JSON file
@@ -848,8 +845,8 @@ mod diff_tests {
     fn layout_json_netlist_adds_derived_footprint_fpid() -> anyhow::Result<()> {
         let mut schematic = Schematic::new();
         schematic.package_roots.insert(
-            "gitlab.com/kicad/libraries/kicad-footprints@10.0.0".to_string(),
-            PathBuf::from("/tmp/vendor/gitlab.com/kicad/libraries/kicad-footprints/10.0.0"),
+            "gitlab.com/example/libs/footprints@10.0.3".to_string(),
+            PathBuf::from("/tmp/vendor/gitlab.com/example/libs/footprints/10.0.3"),
         );
 
         let module_ref = ModuleRef::new("/tmp/demo.zen", "<root>");
@@ -860,9 +857,16 @@ mod diff_tests {
         component.attributes.insert(
             "footprint".into(),
             AttributeValue::String(
-                "package://gitlab.com/kicad/libraries/kicad-footprints@10.0.0/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"
+                "package://gitlab.com/example/libs/footprints@10.0.3/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"
                     .to_string(),
             ),
+        );
+        component.internal_connectivity = pcb_sch::InternalConnectivity::new(
+            true,
+            [std::collections::BTreeSet::from([
+                "1".to_string(),
+                "3".to_string(),
+            ])],
         );
 
         schematic.add_instance(component_ref.clone(), component);
@@ -872,12 +876,18 @@ mod diff_tests {
 
         assert_eq!(
             instance["attributes"]["footprint"]["String"],
-            "package://gitlab.com/kicad/libraries/kicad-footprints@10.0.0/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"
+            "package://gitlab.com/example/libs/footprints@10.0.3/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"
         );
         assert_eq!(
             instance["footprint_fpid"],
-            "kicad_libraries_kicad-footprints_Resistor_SMD@10.0.0:R_0603_1608Metric"
+            "example_libs_footprints_Resistor_SMD@10.0.3:R_0603_1608Metric"
         );
+        assert_eq!(
+            instance["internal_connectivity"]["duplicate_numbers_are_jumpers"],
+            true
+        );
+        assert_eq!(instance["internal_connectivity"]["groups"][0][0], "1");
+        assert_eq!(instance["internal_connectivity"]["groups"][0][1], "3");
 
         Ok(())
     }
@@ -956,8 +966,7 @@ fn patch_pcb_file(
     pcb_path: &Path,
     board_config: Option<&BoardConfig>,
     layout_name: Option<&str>,
-    kicad_model_dirs: &BTreeMap<String, PathBuf>,
-    footprint_lib_dirs: &HashMap<String, PathBuf>,
+    internal_connectivity_by_path: &BTreeMap<String, pcb_sch::InternalConnectivity>,
 ) -> Result<(), LayoutError> {
     let pcb_content = fs::read_to_string(pcb_path).map_err(|e| {
         LayoutError::StackupPatchingError(format!("Failed to read PCB file: {}", e))
@@ -967,7 +976,12 @@ fn patch_pcb_file(
         LayoutError::StackupPatchingError(format!("Failed to parse PCB file: {}", e))
     })?;
 
-    let patches = build_pcb_patchset(&board, board_config, layout_name)?;
+    let patches = build_pcb_patchset(
+        &board,
+        board_config,
+        layout_name,
+        internal_connectivity_by_path,
+    )?;
     let patched = render_patches(&pcb_content, &patches).map_err(|e| {
         LayoutError::StackupPatchingError(format!(
             "Failed to patch PCB file {}: {}",
@@ -975,47 +989,11 @@ fn patch_pcb_file(
             e
         ))
     })?;
-    let pcb_dir = pcb_path.parent().unwrap_or_else(|| Path::new("."));
-    let (embedded, discovery, applied) = model_embed_discovery::embed_models_in_pcb_source(
-        &patched,
-        pcb_dir,
-        kicad_model_dirs,
-        footprint_lib_dirs,
-    )
-    .map_err(|e| {
-        LayoutError::StackupPatchingError(format!(
-            "Failed to prepare embedded 3D models for {}: {}",
-            pcb_path.display(),
-            e
-        ))
-    })?;
-    if discovery.unresolved_refs > 0 {
-        log::warn!(
-            "Unresolved managed 3D model references in {}: {}",
-            pcb_path.display(),
-            discovery.unresolved_refs
-        );
-    }
-
-    info!(
-        "3D model embed: refs={}, managed={}, candidates={}, rewritten={}, added={}, fp_meta={}, missing={}, unresolved={}, unmanaged={}, embedded={}, collisions={}",
-        discovery.total_refs,
-        discovery.managed_refs,
-        applied.candidate_files,
-        applied.rewritten_refs,
-        applied.embedded_files_added,
-        applied.footprint_metadata_entries,
-        discovery.missing_files,
-        discovery.unresolved_refs,
-        discovery.unmanaged_refs,
-        discovery.already_embedded,
-        applied.basename_collisions
-    );
 
     info!("Updating PCB settings in {}", pcb_path.display());
     AtomicFile::new(pcb_path, OverwriteBehavior::AllowOverwrite)
         .write(|f| {
-            f.write_all(embedded.as_bytes())?;
+            f.write_all(patched.as_bytes())?;
             f.flush()
         })
         .map_err(|e| {
@@ -1034,9 +1012,14 @@ fn build_pcb_patchset(
     board: &pcb_sexpr::Sexpr,
     board_config: Option<&BoardConfig>,
     layout_name: Option<&str>,
+    internal_connectivity_by_path: &BTreeMap<String, pcb_sch::InternalConnectivity>,
 ) -> Result<pcb_sexpr::PatchSet, LayoutError> {
     let mut patches = build_title_block_patchset(board)?;
     patches.extend(build_board_properties_patchset(board, layout_name)?);
+    patches.extend(build_footprint_internal_connectivity_patchset(
+        board,
+        internal_connectivity_by_path,
+    )?);
 
     if let Some(stackup) = board_config.and_then(|config| config.stackup.as_ref()) {
         let board_thickness_iu = stackup_thickness_iu(stackup);
@@ -1052,6 +1035,145 @@ fn build_pcb_patchset(
     }
 
     Ok(patches)
+}
+
+fn component_internal_connectivity_by_path(
+    schematic: &Schematic,
+) -> BTreeMap<String, pcb_sch::InternalConnectivity> {
+    schematic
+        .instances
+        .iter()
+        .filter(|(_, instance)| instance.kind == InstanceKind::Component)
+        .map(|(instance_ref, instance)| {
+            (
+                instance_ref.instance_path.join("."),
+                instance.internal_connectivity.clone(),
+            )
+        })
+        .collect()
+}
+
+fn build_footprint_internal_connectivity_patchset(
+    board: &pcb_sexpr::Sexpr,
+    internal_connectivity_by_path: &BTreeMap<String, pcb_sch::InternalConnectivity>,
+) -> Result<pcb_sexpr::PatchSet, LayoutError> {
+    let root_items = board.as_list().ok_or_else(|| {
+        LayoutError::StackupPatchingError("PCB root is not an S-expression list".to_string())
+    })?;
+    if root_items.first().and_then(pcb_sexpr::Sexpr::as_sym) != Some("kicad_pcb") {
+        return Err(LayoutError::StackupPatchingError(
+            "PCB root must start with (kicad_pcb ...)".to_string(),
+        ));
+    }
+
+    let mut patches = pcb_sexpr::PatchSet::new();
+    for item in root_items.iter().skip(1) {
+        let Some(footprint) = item.as_list() else {
+            continue;
+        };
+        if footprint.first().and_then(pcb_sexpr::Sexpr::as_sym) != Some("footprint") {
+            continue;
+        }
+
+        // Managed footprints carry the schematic component path in their "Path"
+        // property (written by the lens, which runs before this postprocess).
+        let Some(connectivity) = pcb_sexpr::kicad::schematic_properties(footprint)
+            .get("Path")
+            .and_then(|path| internal_connectivity_by_path.get(path))
+        else {
+            continue;
+        };
+
+        // KiCad 10 writes the boolean on every footprint, so rewrite it in place
+        // when present but only insert it when true.
+        let duplicate_text = format!(
+            "(duplicate_pad_numbers_are_jumpers {})",
+            if connectivity.duplicate_numbers_are_jumpers {
+                "yes"
+            } else {
+                "no"
+            }
+        );
+        match direct_child_node(footprint, "duplicate_pad_numbers_are_jumpers") {
+            Some(node) => patches.replace_raw(node.span, duplicate_text),
+            None if connectivity.duplicate_numbers_are_jumpers => {
+                insert_footprint_child(&mut patches, footprint, &duplicate_text);
+            }
+            None => {}
+        }
+
+        // Groups are written only when non-empty, matching KiCad's board writer.
+        let groups_text = (!connectivity.groups.is_empty())
+            .then(|| format_jumper_pad_groups(&connectivity.groups));
+        match (
+            direct_child_node(footprint, "jumper_pad_groups"),
+            groups_text,
+        ) {
+            (Some(node), Some(text)) => patches.replace_raw(node.span, text),
+            (Some(node), None) => patches.replace_raw(node.span, String::new()),
+            (None, Some(text)) => insert_footprint_child(&mut patches, footprint, &text),
+            (None, None) => {}
+        }
+    }
+
+    Ok(patches)
+}
+
+fn insert_footprint_child(
+    patches: &mut pcb_sexpr::PatchSet,
+    footprint: &[pcb_sexpr::Sexpr],
+    text: &str,
+) {
+    let at = footprint_internal_connectivity_insert_at(footprint);
+    patches.replace_raw(pcb_sexpr::Span::new(at, at), format!("\n\t\t{text}"));
+}
+
+fn direct_child_node<'a>(
+    parent: &'a [pcb_sexpr::Sexpr],
+    name: &str,
+) -> Option<&'a pcb_sexpr::Sexpr> {
+    parent.iter().skip(1).find(|item| {
+        item.as_list()
+            .and_then(|items| items.first())
+            .and_then(pcb_sexpr::Sexpr::as_sym)
+            == Some(name)
+    })
+}
+
+fn footprint_internal_connectivity_insert_at(footprint: &[pcb_sexpr::Sexpr]) -> usize {
+    let mut insert_at = footprint
+        .get(1)
+        .map(|node| node.span.end)
+        .or_else(|| footprint.first().map(|node| node.span.end))
+        .unwrap_or_default();
+
+    for item in footprint.iter().skip(2) {
+        let tag = item
+            .as_list()
+            .and_then(|child| child.first())
+            .and_then(pcb_sexpr::Sexpr::as_sym);
+        // KiCad's board writer emits the jumper nodes right after these, in this
+        // order: attr, stackup, private_layers, net_tie_pad_groups.
+        if matches!(
+            tag,
+            Some("property" | "attr" | "stackup" | "private_layers" | "net_tie_pad_groups")
+        ) {
+            insert_at = item.span.end;
+        }
+    }
+
+    insert_at
+}
+
+fn format_jumper_pad_groups(groups: &[std::collections::BTreeSet<String>]) -> String {
+    let mut group_items = vec![pcb_sexpr::Sexpr::symbol("jumper_pad_groups")];
+    for group in groups {
+        group_items.push(pcb_sexpr::Sexpr::list(
+            group.iter().map(pcb_sexpr::Sexpr::string).collect(),
+        ));
+    }
+
+    pcb_sexpr::Sexpr::list(group_items).to_string()
 }
 
 fn build_board_properties_patchset(
@@ -1333,9 +1455,11 @@ fn stackup_thickness_iu(stackup: &Stackup) -> Option<PcbIu> {
 mod tests {
     use super::{
         PCB_GIT_HASH_PLACEHOLDER, PCB_VERSION_PLACEHOLDER, PcbIu, build_board_properties_patchset,
-        build_stackup_patchset, build_title_block_patchset, stackup_thickness_iu,
+        build_footprint_internal_connectivity_patchset, build_stackup_patchset,
+        build_title_block_patchset, stackup_thickness_iu,
     };
     use pcb_zen_core::lang::stackup::{CopperRole, DielectricForm, Layer, Stackup};
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn stackup_thickness_iu_rounds_like_kicad() {
@@ -1397,6 +1521,90 @@ mod tests {
         assert!(out.contains(&format!(
             r#"(property "PCB_GIT_HASH" "{PCB_GIT_HASH_PLACEHOLDER}")"#
         )));
+    }
+
+    #[test]
+    fn build_footprint_internal_connectivity_patchset_applies_jumper_metadata() {
+        let input = r#"(kicad_pcb
+	(footprint "Lib:JP"
+		(layer "F.Cu")
+		(property "Path" "J1")
+		(path "/old")
+		(attr smd)
+		(duplicate_pad_numbers_are_jumpers no)
+		(jumper_pad_groups
+			("8" "9")
+		)
+		(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu"))
+	)
+)"#;
+
+        let board = pcb_sexpr::parse(input).unwrap();
+        let connectivity = BTreeMap::from([(
+            "J1".to_string(),
+            pcb_sch::InternalConnectivity::new(
+                true,
+                [BTreeSet::from(["1".to_string(), "3".to_string()])],
+            ),
+        )]);
+        let patches =
+            build_footprint_internal_connectivity_patchset(&board, &connectivity).unwrap();
+        let mut out = Vec::new();
+        patches.write_to(input, &mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+
+        assert!(out.contains("(duplicate_pad_numbers_are_jumpers yes)"));
+        assert!(out.contains("(jumper_pad_groups"));
+        assert!(out.contains(r#"("1" "3")"#));
+        assert!(!out.contains(r#"("8" "9")"#));
+    }
+
+    #[test]
+    fn build_footprint_internal_connectivity_patchset_clears_stale_jumper_groups() {
+        let input = r#"(kicad_pcb
+	(footprint "Lib:JP"
+		(layer "F.Cu")
+		(property "Path" "J1")
+		(path "/old")
+		(duplicate_pad_numbers_are_jumpers yes)
+		(jumper_pad_groups
+			("1" "3")
+		)
+		(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu"))
+	)
+)"#;
+
+        let board = pcb_sexpr::parse(input).unwrap();
+        let connectivity =
+            BTreeMap::from([("J1".to_string(), pcb_sch::InternalConnectivity::default())]);
+        let patches =
+            build_footprint_internal_connectivity_patchset(&board, &connectivity).unwrap();
+        let mut out = Vec::new();
+        patches.write_to(input, &mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+
+        assert!(out.contains("(duplicate_pad_numbers_are_jumpers no)"));
+        assert!(!out.contains("(jumper_pad_groups"));
+    }
+
+    #[test]
+    fn build_footprint_internal_connectivity_patchset_leaves_default_empty_metadata_absent() {
+        let input = r#"(kicad_pcb
+	(footprint "Lib:JP"
+		(layer "F.Cu")
+		(property "Path" "J1")
+		(path "/old")
+		(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu"))
+	)
+)"#;
+
+        let board = pcb_sexpr::parse(input).unwrap();
+        let connectivity =
+            BTreeMap::from([("J1".to_string(), pcb_sch::InternalConnectivity::default())]);
+        let patches =
+            build_footprint_internal_connectivity_patchset(&board, &connectivity).unwrap();
+
+        assert!(patches.is_empty());
     }
 
     #[test]

@@ -154,9 +154,7 @@ impl Default for LspEvalContext {
             open_files: open_files.clone(),
         });
         let resolution = crate::get_workspace_info(&file_provider, &std::env::temp_dir())
-            .and_then(|ws| {
-                crate::resolve_workspace_dependencies(ws, &std::env::temp_dir(), false, false)
-            })
+            .and_then(|ws| crate::resolve_workspace_dependencies(ws, &std::env::temp_dir(), false))
             .unwrap_or_else(|_| ResolutionResult::empty());
         let inner = EvalContext::new(file_provider.clone(), resolution);
 
@@ -234,13 +232,14 @@ impl LspEvalContext {
     fn maybe_invalidate_symbol_library(&self, path: &Path) {
         if is_kicad_symbol_file(path.extension()) {
             invalidate_symbol_library(path, self.file_provider.as_ref());
+            self.inner.invalidate_file(path);
         }
     }
 
     fn is_dependency_manifest(path: &Path) -> bool {
         matches!(
             path.file_name().and_then(|name| name.to_str()),
-            Some("pcb.toml" | "pcb.sum")
+            Some("pcb.toml")
         )
     }
 
@@ -456,9 +455,18 @@ impl LspEvalContext {
             return cached.clone();
         }
 
-        let mut resolution = crate::get_workspace_info(&self.file_provider, &workspace_root)
-            .and_then(|ws| crate::resolve_workspace_dependencies(ws, &workspace_root, false, false))
-            .unwrap_or_else(|_| ResolutionResult::empty());
+        let mut resolution = match crate::get_workspace_info(&self.file_provider, &workspace_root)
+            .and_then(|ws| crate::resolve_workspace_dependencies(ws, &workspace_root, false))
+        {
+            Ok(resolution) => resolution,
+            Err(err) => {
+                log::debug!(
+                    "Failed to resolve dependencies for {}: {err:#}",
+                    workspace_root.display()
+                );
+                return Arc::new(ResolutionResult::empty());
+            }
+        };
         resolution.canonicalize_keys(&*self.file_provider);
         let resolution = Arc::new(resolution);
         self.resolution_cache
@@ -622,8 +630,7 @@ impl LspContext for LspEvalContext {
     fn did_change_file_contents(&self, uri: &LspUrl, contents: &str) {
         if let LspUrl::File(path) = uri {
             self.store_open_file(path, contents);
-            self.inner
-                .set_file_contents(path.to_path_buf(), contents.to_string());
+            self.inner.invalidate_file(path);
             self.maybe_invalidate_symbol_library(path);
             self.maybe_invalidate_resolution_cache(path);
         }
@@ -632,10 +639,7 @@ impl LspContext for LspEvalContext {
     fn did_close_file(&self, uri: &LspUrl) {
         if let LspUrl::File(path) = uri {
             self.remove_open_file(path);
-            self.inner.clear_file_contents(path);
-            if let Ok(canon) = self.file_provider.canonicalize(path) {
-                self.inner.clear_file_contents(&canon);
-            }
+            self.inner.invalidate_file(path);
             self.clear_last_schematic(path);
             self.maybe_invalidate_symbol_library(path);
             self.maybe_invalidate_resolution_cache(path);
@@ -804,7 +808,7 @@ impl LspContext for LspEvalContext {
                 if let Some(parsed) = result.output.as_ref() {
                     // Cache the schematic now, while the session module tree
                     // still reflects only this file's evaluation.
-                    if let Ok(sch) = parsed.eval_output.to_schematic() {
+                    if let Ok(sch) = parsed.to_schematic() {
                         self.set_last_schematic(path, sch);
                     } else {
                         self.clear_last_schematic(path);
@@ -822,7 +826,7 @@ impl LspContext for LspEvalContext {
 
                 LspEvalResult {
                     diagnostics,
-                    ast: result.output.map(|parsed| parsed.ast),
+                    ast: result.output.map(|parsed| Arc::unwrap_or_clone(parsed.ast)),
                 }
             }
             _ => {
@@ -1535,12 +1539,20 @@ mod tests {
     #[test]
     fn lsp_loads_open_dependency_contents() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
-        let dep_path = dir.path().join("dep.zen");
-        let main_path = dir.path().join("main.zen");
+        let root = dir.path().canonicalize()?;
+        let package_dir = root.join("pkg");
+        fs::create_dir_all(&package_dir)?;
+        let dep_path = package_dir.join("dep.zen");
+        let main_path = package_dir.join("main.zen");
 
         let main_contents = "load(\"./dep.zen\", \"foo\")\n";
+        fs::write(
+            root.join("pcb.toml"),
+            "[workspace]\npcb-version = \"0.4\"\n",
+        )?;
+        fs::write(package_dir.join("pcb.toml"), "")?;
         fs::write(&main_path, main_contents)?;
-        fs::write(&dep_path, "def foo(:\n")?;
+        fs::write(&dep_path, "def foo():\n    return 0\n")?;
 
         let ctx = LspEvalContext::default();
         let main_url = LspUrl::File(main_path.clone());
@@ -1563,6 +1575,7 @@ mod tests {
             "expected diagnostics when dependency buffer is invalid"
         );
 
+        fs::write(&dep_path, "def foo(:\n")?;
         ctx.did_close_file(&dep_url);
         let result = ctx.parse_file_with_contents(&main_url, main_contents.to_string());
         assert!(
@@ -1574,10 +1587,57 @@ mod tests {
     }
 
     #[test]
+    fn lsp_does_not_cache_failed_dependency_resolution() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let main_path = dir.path().join("main.zen");
+        let manifest_path = dir.path().join("pcb.toml");
+
+        fs::write(
+            &manifest_path,
+            r#"[workspace]
+pcb-version = "0.4"
+
+[dependencies]
+"github.com/acme/dep" = { branch = "main" }
+"#,
+        )?;
+        fs::write(&main_path, "x = 1\n")?;
+
+        let ctx = LspEvalContext::default();
+        let workspace_root = ctx.workspace_root_for(&main_path);
+        let _ = ctx.resolution_for(&main_path);
+        assert!(
+            !ctx.resolution_cache
+                .read()
+                .unwrap()
+                .contains_key(&workspace_root),
+            "failed dependency resolution should not be cached"
+        );
+
+        fs::write(
+            &manifest_path,
+            r#"[workspace]
+pcb-version = "0.4"
+"#,
+        )?;
+        let _ = ctx.resolution_for(&main_path);
+        assert!(
+            ctx.resolution_cache
+                .read()
+                .unwrap()
+                .contains_key(&workspace_root),
+            "successful dependency resolution should be cached"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn lsp_invalidates_symbol_library_cache_on_edit() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
-        let lib_path = dir.path().join("lib.kicad_sym");
-        let main_path = dir.path().join("main.zen");
+        let root = dir.path().canonicalize()?;
+        let lib_path = root.join("lib.kicad_sym");
+        let main_path = root.join("main.zen");
 
         let single_symbol = r#"(kicad_symbol_lib
     (symbol "OnlySymbol"
@@ -1614,6 +1674,10 @@ mod tests {
 
         let main_contents = "sym = Symbol(\"lib.kicad_sym\")\n";
 
+        fs::write(
+            root.join("pcb.toml"),
+            "[workspace]\npcb-version = \"0.4\"\n",
+        )?;
         fs::write(&lib_path, single_symbol)?;
         fs::write(&main_path, main_contents)?;
 

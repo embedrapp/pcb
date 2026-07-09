@@ -6,7 +6,7 @@ use pcb_ui::prelude::*;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-use crate::build::{build, create_diagnostics_passes};
+use crate::build::{BuildEvalState, create_diagnostics_passes};
 use crate::config_input::{CONFIG_ARG_HELP, parse_config_overrides};
 use crate::drc;
 
@@ -41,11 +41,6 @@ pub struct LayoutArgs {
     /// Supports hierarchical matching (e.g., 'layout.drc' matches 'layout.drc.clearance')
     #[arg(short = 'S', long = "suppress", value_name = "KIND")]
     pub suppress: Vec<String>,
-
-    /// Require that pcb.toml is up-to-date and verify pcb.sum if it exists.
-    /// Does not write pcb.toml or pcb.sum. Recommended for CI.
-    #[arg(long)]
-    pub locked: bool,
 
     /// Resolve existing layout files without updating them
     #[arg(long = "no-sync", conflicts_with_all = ["temp", "check"])]
@@ -83,25 +78,21 @@ pub fn execute(mut args: LayoutArgs) -> Result<()> {
         args.no_open = true;
     }
 
-    // Default to locked mode in CI environments
-    let locked = args.locked || std::env::var("CI").is_ok();
-
     // Resolve dependencies before building
-    let resolution_result = crate::resolve::resolve(Some(&args.file), args.offline, locked)?;
-    let model_dirs = resolution_result.kicad_model_dirs();
+    let resolution_result = crate::resolve::resolve(Some(&args.file), args.offline)?;
 
     let zen_path = &args.file;
     let file_name = zen_path.file_name().unwrap().to_string_lossy().to_string();
 
-    let Some(schematic) = build(
+    let build_result = BuildEvalState::new(resolution_result).build(
         zen_path,
         config_inputs,
         create_diagnostics_passes(&args.suppress, &[]),
         false,
         &mut false.clone(),
         &mut false.clone(),
-        resolution_result,
-    ) else {
+    );
+    let Some(schematic) = build_result.schematic else {
         anyhow::bail!("Build failed");
     };
 
@@ -118,6 +109,21 @@ pub fn execute(mut args: LayoutArgs) -> Result<()> {
         return Ok(());
     }
 
+    // Layout consumes the footprints, so validate their contents (including
+    // embedded payloads) before generating the board.
+    if let Some(eval_output) = &build_result.eval_output {
+        let mut footprint_diagnostics = pcb_zen_core::Diagnostics::default();
+        footprint_diagnostics
+            .diagnostics
+            .extend(eval_output.validate_footprints());
+        if !footprint_diagnostics.diagnostics.is_empty() {
+            drc::render_diagnostics(&mut footprint_diagnostics, &args.suppress);
+            if footprint_diagnostics.error_count() > 0 {
+                anyhow::bail!("Invalid footprints");
+            }
+        }
+    }
+
     // Process layout and collect diagnostics
     let spinner_msg = if args.check {
         format!("{file_name}: Checking layout")
@@ -126,13 +132,7 @@ pub fn execute(mut args: LayoutArgs) -> Result<()> {
     };
     let spinner = Spinner::builder(spinner_msg).hidden(hide_progress).start();
     let mut diagnostics = pcb_zen_core::Diagnostics::default();
-    let result = process_layout(
-        &schematic,
-        &model_dirs,
-        args.temp,
-        args.check,
-        &mut diagnostics,
-    )?;
+    let result = process_layout(&schematic, args.temp, args.check, &mut diagnostics)?;
     spinner.finish();
 
     let Some(layout_result) = result else {

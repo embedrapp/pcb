@@ -62,14 +62,10 @@ fn list_updates() -> Result<()> {
         bail!("`pcb list -m -u` must be run from a package directory.");
     };
 
-    let mut resolver = PackageResolver::new(workspace.clone(), false)?;
+    let mut resolver = PackageResolver::new(workspace.clone())?;
     let resolution = resolver.resolve_package(&target.package_url)?;
 
     for dep_id in &resolution.direct_remote_ids {
-        if pcb_mod::is_configured_kicad_repo(&workspace, &dep_id.path) {
-            continue;
-        }
-
         let current = resolution.resolved_remote.get(dep_id).ok_or_else(|| {
             anyhow::anyhow!(
                 "Resolved direct dependency {} is missing a selected version",

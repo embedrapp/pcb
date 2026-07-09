@@ -1,20 +1,31 @@
 use ipc2581::Symbol;
+
+pub use crate::layers::layer_role;
 use ipc2581::types::LayerFunction;
-use pcb_ir::common::{LayerRole, Side};
-use pcb_ir::dialects::mask::MaskDocument;
+use pcb_ir::dialects::artwork::{Geometry, Object, PaintOrder, PaintStage};
+use pcb_ir::dialects::ipc::{ProfileSet, profile_occurrences_for};
+use pcb_ir::dialects::{LayerRole, Side, mask};
+use pcb_ir::geom::{BBox, Paint, Polarity, Span, StrokeStyle};
 
-type GeometryDocument = pcb_ir::dialects::ipc::GeometryDocument<Symbol, LayerFunction>;
+type GeometryDocument = pcb_ir::dialects::ipc::Document<Symbol, LayerFunction>;
+type ArtworkDocument = pcb_ir::dialects::artwork::Document<LayerFunction, Option<Symbol>>;
 
-pub fn render_layer_svg(geometry: &GeometryDocument, include_profiles: bool) -> String {
-    let mask = layer_mask(geometry, include_profiles);
-    pcb_ir::dialects::mask::render_svg_all(&mask)
+const DISPLAY_PROFILE_STROKE_WIDTH_MM: f64 = 0.1;
+
+pub fn render_layer_svg(
+    geometry: &GeometryDocument,
+    include_profiles: bool,
+    profile_set: ProfileSet,
+) -> String {
+    let mask = layer_mask(geometry, include_profiles, profile_set);
+    pcb_ir::render::svg(&mask, &pcb_ir::render::RenderOptions::default())
 }
 
 fn layer_has_content(geometry: &GeometryDocument) -> bool {
-    let mask = layer_mask(geometry, false);
+    let mask = layer_mask(geometry, false, ProfileSet::RootOnly);
     mask.layers
         .first()
-        .map(|layer| layer.shape_count > 0 && !layer.bbox.is_empty())
+        .map(|layer| !layer.shapes.is_empty() && !layer.bbox.is_empty())
         .unwrap_or(false)
 }
 
@@ -24,8 +35,9 @@ pub fn layer_has_native_content(geometry: &GeometryDocument) -> bool {
     };
 
     let source_layer_ref = layer.source_layer_ref;
-    let features = geometry.features
-        [layer.feature_start as usize..(layer.feature_start + layer.feature_count) as usize]
+    let features = layer
+        .features
+        .slice(&geometry.features)
         .iter()
         .filter(|feature| feature.source_layer_ref == Some(source_layer_ref))
         .cloned()
@@ -35,62 +47,88 @@ pub fn layer_has_native_content(geometry: &GeometryDocument) -> bool {
     }
 
     let mut native = geometry.clone();
+    native.layers[0].features = Span::new(0, features.len() as u32);
     native.features = features;
-    native.layers[0].feature_start = 0;
-    native.layers[0].feature_count = native.features.len() as u32;
-    pcb_ir::dialects::ipc::process::process_document(&mut native);
+    pcb_ir::dialects::ipc::process::compose_for_rendering(&mut native);
     layer_has_content(&native)
 }
 
 pub fn layer_mask(
     geometry: &GeometryDocument,
     include_profiles: bool,
-) -> MaskDocument<LayerFunction> {
+    profile_set: ProfileSet,
+) -> mask::Document<LayerFunction> {
     let layer = &geometry.layers[0];
-    let geom = if include_profiles {
-        pcb_ir::dialects::ipc::lower_layer_with_profiles_to_geom(
-            geometry,
-            0,
-            layer_role(layer.layer_function),
-            Side::None,
-        )
-    } else {
-        pcb_ir::dialects::ipc::lower_layer_to_geom(
-            geometry,
-            0,
-            layer_role(layer.layer_function),
-            Side::None,
-        )
-    };
-    pcb_ir::dialects::geom::lower_filled_to_mask(&pcb_ir::dialects::geom::outline_strokes(geom))
+    let mut artwork = pcb_ir::dialects::ipc::lower_layer_to_artwork(
+        geometry,
+        0,
+        layer_role(layer.layer_function),
+        Side::None,
+    );
+    if include_profiles {
+        append_display_profiles(&mut artwork, geometry, profile_set, layer.layer_function);
+    }
+    pcb_ir::dialects::artwork::compose_to_mask(&artwork)
 }
 
-pub fn layer_role(function: LayerFunction) -> LayerRole {
-    match function {
-        LayerFunction::Conductor
-        | LayerFunction::CondFilm
-        | LayerFunction::CondFoil
-        | LayerFunction::Plane
-        | LayerFunction::Signal
-        | LayerFunction::Mixed => LayerRole::Copper,
-        LayerFunction::Solderpaste | LayerFunction::Pastemask => LayerRole::Paste,
-        LayerFunction::Soldermask => LayerRole::Soldermask,
-        LayerFunction::Silkscreen | LayerFunction::Legend => LayerRole::Legend,
-        LayerFunction::Drill => LayerRole::Drill,
-        LayerFunction::Rout
-        | LayerFunction::VCut
-        | LayerFunction::Score
-        | LayerFunction::EdgeChamfer
-        | LayerFunction::EdgePlating
-        | LayerFunction::BoardOutline => LayerRole::Profile,
-        LayerFunction::Assembly
-        | LayerFunction::BoardFab
-        | LayerFunction::Courtyard
-        | LayerFunction::Document
-        | LayerFunction::Graphic
-        | LayerFunction::Fixture
-        | LayerFunction::Probe
-        | LayerFunction::Rework => LayerRole::Mechanical,
-        _ => LayerRole::Other,
+fn append_display_profiles(
+    artwork: &mut ArtworkDocument,
+    geometry: &GeometryDocument,
+    profile_set: ProfileSet,
+    layer_function: LayerFunction,
+) {
+    let profile_layer = artwork.push_layer(pcb_ir::dialects::artwork::Layer {
+        name: "Profile".to_string(),
+        role: LayerRole::Profile,
+        side: Side::None,
+        objects: Span::EMPTY,
+        bbox: BBox::empty(),
+        meta: layer_function,
+    });
+
+    for occurrence in profile_occurrences_for(geometry, profile_set) {
+        append_display_profile_path(
+            artwork,
+            profile_layer,
+            geometry,
+            occurrence.profile.outer_path,
+            occurrence.transform,
+        );
+        for cutout in occurrence.profile.cutouts.slice(&geometry.profile_cutouts) {
+            append_display_profile_path(
+                artwork,
+                profile_layer,
+                geometry,
+                cutout.path,
+                occurrence.transform,
+            );
+        }
     }
+
+    pcb_ir::dialects::artwork::normalize_bounds(artwork);
+}
+
+fn append_display_profile_path(
+    artwork: &mut ArtworkDocument,
+    layer: u32,
+    geometry: &GeometryDocument,
+    path: u32,
+    transform: pcb_ir::geom::Affine2,
+) {
+    let path = artwork.push_path(
+        Paint::Stroke(StrokeStyle::round(DISPLAY_PROFILE_STROKE_WIDTH_MM)),
+        geometry.transformed_path_contours(path, transform),
+    );
+    artwork.push_object(
+        layer,
+        Object {
+            polarity: Polarity::Dark,
+            order: PaintOrder {
+                stage: PaintStage::Overlay,
+            },
+            geometry: Geometry::Stroke { path },
+            bbox: artwork.path_bbox(path),
+            meta: None,
+        },
+    );
 }

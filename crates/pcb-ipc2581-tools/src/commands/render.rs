@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::geometry;
 use crate::utils::file as file_utils;
-use crate::{RenderFormat, ipc2581};
+use crate::{LayoutTarget, RenderFormat, ipc2581};
 
 /// Options for rendering processed geometry from a single IPC-2581 layer.
 #[derive(Debug, Clone)]
@@ -13,6 +13,7 @@ pub struct RenderOptions {
     pub layer: String,
     pub output: Option<PathBuf>,
     pub format: RenderFormat,
+    pub layout_target: LayoutTarget,
     pub flat: bool,
 }
 
@@ -21,18 +22,20 @@ pub fn execute(input_file: &Path, options: &RenderOptions) -> Result<()> {
     let target = resolve_target(options)?;
     let content = file_utils::load_ipc_file(input_file)?;
     let ipc = ipc2581::Ipc2581::parse(&content)?;
-    let mut geometry = geometry::extract_layer(&ipc, &options.layer)?;
-    pcb_ir::dialects::ipc::process::process_document(&mut geometry);
+    let view = options.layout_target.geometry_view();
+    let mut geometry = geometry::extract_layer_for_view(&ipc, &options.layer, view)?;
+    pcb_ir::dialects::ipc::process::compose_for_rendering(&mut geometry);
     if options.flat {
         pcb_ir::dialects::ipc::process::flatten_layers_to_masks(&mut geometry);
     }
 
     match target {
-        RenderTarget::Svg => render_svg(&geometry, options)?,
-        RenderTarget::Png => render_png(&geometry, options)?,
+        RenderTarget::Svg => render_svg(&geometry, options, view)?,
+        RenderTarget::Png => render_png(&geometry, options, view)?,
         RenderTarget::Terminal => {
-            let mask = geometry::render::layer_mask(&geometry, true);
-            pcb_ir::dialects::mask::render_all_to_terminal(&mask).map_err(anyhow::Error::msg)?;
+            let mask = geometry::render::layer_mask(&geometry, true, view.profile_set());
+            pcb_ir::render::to_terminal(&mask, &pcb_ir::render::RenderOptions::default())
+                .map_err(anyhow::Error::msg)?;
         }
     }
 
@@ -54,7 +57,7 @@ fn resolve_target(options: &RenderOptions) -> Result<RenderTarget> {
         RenderFormat::Auto => {
             if let Some(output) = &options.output {
                 infer_format_from_output(output)
-            } else if pcb_ir::dialects::mask::can_render_to_terminal() {
+            } else if pcb_ir::render::can_render_to_terminal() {
                 Ok(RenderTarget::Terminal)
             } else {
                 bail!(
@@ -84,13 +87,11 @@ fn infer_format_from_output(output: &Path) -> Result<RenderTarget> {
 }
 
 fn render_svg(
-    geometry: &pcb_ir::dialects::ipc::GeometryDocument<
-        ipc2581::Symbol,
-        ipc2581::types::LayerFunction,
-    >,
+    geometry: &pcb_ir::dialects::ipc::Document<ipc2581::Symbol, ipc2581::types::LayerFunction>,
     options: &RenderOptions,
+    view: pcb_ir::dialects::ipc::View,
 ) -> Result<()> {
-    let svg = geometry::render::render_layer_svg(geometry, true);
+    let svg = geometry::render::render_layer_svg(geometry, true, view.profile_set());
 
     if let Some(output) = &options.output {
         std::fs::write(output, svg)
@@ -108,14 +109,13 @@ fn render_svg(
 }
 
 fn render_png(
-    geometry: &pcb_ir::dialects::ipc::GeometryDocument<
-        ipc2581::Symbol,
-        ipc2581::types::LayerFunction,
-    >,
+    geometry: &pcb_ir::dialects::ipc::Document<ipc2581::Symbol, ipc2581::types::LayerFunction>,
     options: &RenderOptions,
+    view: pcb_ir::dialects::ipc::View,
 ) -> Result<()> {
-    let mask = geometry::render::layer_mask(geometry, true);
-    let png = pcb_ir::dialects::mask::render_png_all(&mask).map_err(anyhow::Error::msg)?;
+    let mask = geometry::render::layer_mask(geometry, true, view.profile_set());
+    let png = pcb_ir::render::png(&mask, &pcb_ir::render::RenderOptions::default())
+        .map_err(anyhow::Error::msg)?;
 
     if let Some(output) = &options.output {
         std::fs::write(output, png)

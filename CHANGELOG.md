@@ -8,6 +8,135 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-07-08
+
+### Changed
+
+- `pcb scan` now uses the datasheet cache API and skips re-uploading PDFs the backend already has.
+- `pcb new component` resolves symbol datasheet URLs through the datasheet cache API and keeps the URL in the symbol instead of vendoring a local PDF copy.
+
+## [0.4.5] - 2026-07-07
+
+### Added
+
+- Added `pcb gerber normalize` to re-emit a Gerber layer through the pcb-ir pipeline.
+- Added `pcb ipc2581 dfm` to flag features and gaps narrower than a manufacturing minimum.
+
+### Changed
+
+- Gerber import preserves standard-aperture flashes.
+- Board array profile Gerbers emit arcs instead of tessellated segments.
+
+### Fixed
+
+- `pcb sync` no longer downgrades workspace dependency pins when local git tags are stale.
+- Gerber regions no longer connect holes with board-length cut-in slivers.
+- `pcb open` now accepts sandbox file URIs in the new `/fs/read?path=...` form emitted by Diode Registry and uses the current streamed sandbox exec API.
+- Reference designators derived from instance-name hints now honor 4-digit (1000-series) numbers such as `R1000`, `R1500`, and `LED1001` instead of silently auto-renumbering them.
+- `pcb doc @stdlib/...` now works from inside any workspace.
+
+## [0.4.4] - 2026-07-03
+
+### Added
+
+- Added `pcb sync --check` to fail CI when hydrated `pcb.toml` manifests or vendored package versions are out of sync. The check covers the whole workspace regardless of the current directory.
+- Added `DIODE_API_AUTH=none` to send Diode API requests without attaching client auth, for proxy-injected authentication.
+
+### Changed
+
+- `pcb sync` now applies manifest and vendor updates only after the whole workspace resolves; a resolution failure no longer leaves partially hydrated manifests.
+- `pcb sync` and `pcb vendor` no longer create an empty `vendor/` directory when no packages match the vendor patterns.
+
+### Removed
+
+- Removed `pcb sync --offline`; use `pcb build --offline` with a synced manifest for offline reproducibility.
+
+## [0.4.3] - 2026-06-29
+
+### Added
+
+- IPC-2581 mutations now create a history record when the source file does not already have one, including board array creation.
+- IPC-2581 board arrays now include panelization metadata.
+
+### Fixed
+
+- Fixed a `pcb build` performance regression in large workspaces with many packages.
+- IPC-2581 to Gerber export now emits compound region holes as local Gerber cut-ins.
+
+## [0.4.2] - 2026-06-26
+
+### Added
+
+- Added IPC-2581 board array creation, viewing, and export support to `pcb ipc`.
+- Added `pcb rectify check` and `pcb rectify fix`, backed by a bundled `pcb-rectify` sidecar binary, to check and patch KiCad footprint 3D model `(rotate ...)`/`(offset ...)` transforms by matching tessellated STEP geometry against the footprint's pads and holes.
+
+### Fixed
+
+- `pcb` toolchain resolution now only considers fully-published releases. Releases are gated on a `pcb/index/<version>` completion marker written as the final step of publishing, so the shim never resolves or downloads a release whose artifacts are still uploading.
+- `NotConnected` is now an open-net constructor, not a net type.
+
+## [0.4.1] - 2026-06-22
+
+### Fixed
+
+- Net kind merging now promotes empty or `NotConnected` placeholders to observed concrete kinds.
+- Stdlib TVS matching now includes the `SP3022-01ETG-NM` SOD-882 peak pulse power rating.
+- `pcb build` now rejects relative imports into undeclared nested workspace packages and asks users to run `pcb sync`.
+
+## [0.4.0] - 2026-06-17
+
+### Fixed
+
+- Net aliases used inside `io()` interface templates no longer unregister the original net name.
+- Child net-symbol position overrides (`# pcb:sch <child>.<NET>.<idx>`) are no longer dropped when the net is renamed across the module boundary.
+- Package content hashes ignore generated `pcb.sum` files.
+- Read/evaluation paths now require hydrated manifests and never mutate dependency state.
+- `pcb info` reports cache dependencies using stable `.pcb/cache` paths.
+- Frozen eval root detection uses resolved package roots.
+- Restored stdlib `Crystal` support for the `2012_2Pin` package with its bundled KiCad footprint.
+
+### Changes
+
+- Stdlib LEDs now use color-specific KiCad small filled symbols for single-color LEDs.
+- Stdlib generic passives, diodes, crystals, ferrite beads, and test points now use KiCad small schematic symbols by default.
+- Removed legacy v1/`pcb.sum` resolution, disabled `pcb update`, and dropped obsolete `--locked` read-command flags.
+- `pcb migrate` removes deprecated `[workspace].members`; other commands reject it.
+- `pcb sync` no longer writes stdlib-only KiCad dependency entries.
+- `pcb migrate` now upgrades workspace `pcb-version` after successful latest-toolchain migrations.
+- Added `[workspace.bom] strict = true` to require exact MPN matching when fetching BOM availability.
+- `pcb publish` release metadata now records strict workspace BOM matching when enabled.
+- Bundled selected KiCad library assets into stdlib, including embedded footprint STEP models; `@kicad-symbols` and `@kicad-footprints` now resolve to those bundled assets.
+- Legacy `gitlab.com/kicad/libraries/*` manifest dependencies are ignored during resolution because stdlib carries the referenced KiCad assets.
+- Updated stdlib generics to use KiCad 10.0.3 symbols and footprints, while keeping `Crystal()` compatible with KiCad 9 four-pin symbols.
+- `pcb publish` now bundles only referenced KiCad split-symbol files instead of whole split-library directories.
+- Added `pcb +local ...` to run the local toolchain installed by `install.sh --local`.
+- `pcb +nightly ...` now caches nightly release metadata for 30 minutes.
+- Removed legacy manifest and import support: `[module]`, `[packages]`, `[assets]`, and `[workspace].resolver` are rejected; legacy stdlib load paths are no longer accepted; `pcb migrate` no longer runs V1 codemods.
+- Removed deprecated stdlib files and modules, including `config.zen`, `metadata.zen`, `pins.zen`, `kicad/*`, and the generic BJT, diode, MOSFET, standoff, and terminal-block modules.
+- Removed deprecated stdlib API shims, including `Properties()`, `Schematics()`, `config_unit()`, `config_properties()`, `*Range` unit aliases, legacy `NetTie` inputs, and legacy resistor, capacitor, ferrite, and inductor inputs.
+- Removed deprecated language shims, including `config(convert=...)`, bare `add_property(...)`, `NET=` net casts, module DNP properties, automatic component property key capitalization, legacy `Component(properties={...})` sourcing/DNP keys, and legacy net moved aliases.
+- Regular nets now require explicit or assignment-inferred unique names; unnamed or duplicate regular nets fail evaluation.
+- `NotConnected` nets are now source-unnamed; explicit names are ignored with a warning and downstream tools assign connection-derived names as needed.
+- Added KiCad 10 jumper-pin support.
+
+## [0.3.93] - 2026-06-12
+
+### Changed
+
+- Remote sandbox sync now uses octet-stream writes, refreshes auth during sessions, and keeps recoverable local KiCad session files when sync exits unexpectedly.
+
+## [0.3.92] - 2026-06-09
+
+### Changed
+
+- `pcb publish` package mode now includes board manifests.
+
+## [0.3.91] - 2026-06-08
+
+### Changed
+
+- Added a `No match (unknown part)` type to the `pcb bom` availability legend and summary.
+
 ## [0.3.90] - 2026-06-04
 
 ### Added
@@ -82,6 +211,7 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 ### Added
 
 - Added Würth Elektronik WE-PMFI 1210 power inductors to stdlib house BOM matching.
+
 
 ## [0.3.84] - 2026-05-21
 
@@ -1160,7 +1290,17 @@ Tvs(package="DO-214AA", direction="Unidirectional", reverse_standoff_voltage="24
 - Error on invalid type passed to `io()`
 - Format the auto-generated component .zen files
 
-[Unreleased]: https://github.com/diodeinc/pcb/compare/v0.3.90...HEAD
+[Unreleased]: https://github.com/diodeinc/pcb/compare/v0.4.6...HEAD
+[0.4.6]: https://github.com/diodeinc/pcb/compare/v0.4.5...v0.4.6
+[0.4.5]: https://github.com/diodeinc/pcb/compare/v0.4.4...v0.4.5
+[0.4.4]: https://github.com/diodeinc/pcb/compare/v0.4.3...v0.4.4
+[0.4.3]: https://github.com/diodeinc/pcb/compare/v0.4.2...v0.4.3
+[0.4.2]: https://github.com/diodeinc/pcb/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/diodeinc/pcb/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/diodeinc/pcb/compare/v0.3.93...v0.4.0
+[0.3.93]: https://github.com/diodeinc/pcb/compare/v0.3.92...v0.3.93
+[0.3.92]: https://github.com/diodeinc/pcb/compare/v0.3.91...v0.3.92
+[0.3.91]: https://github.com/diodeinc/pcb/compare/v0.3.90...v0.3.91
 [0.3.90]: https://github.com/diodeinc/pcb/compare/v0.3.89...v0.3.90
 [0.3.89]: https://github.com/diodeinc/pcb/compare/v0.3.88...v0.3.89
 [0.3.88]: https://github.com/diodeinc/pcb/compare/v0.3.87...v0.3.88

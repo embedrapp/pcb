@@ -378,110 +378,17 @@ fn parse_git_timezone_offset(offset: &str) -> Option<i32> {
     Some(sign * (hour * 3_600 + minute * 60))
 }
 
-fn clone(remote_url: &str, dest_dir: &Path, bare: bool, prompt: bool) -> anyhow::Result<()> {
+fn clone(remote_url: &str, dest_dir: &Path, prompt: bool) -> anyhow::Result<()> {
     let mut cmd = git_global_with_prompt(prompt);
     cmd.arg("clone");
-    if bare {
-        cmd.arg("--bare");
-    }
-    cmd.args(["--quiet", remote_url]).arg(dest_dir);
+    cmd.args(["--quiet", "--no-checkout", remote_url])
+        .arg(dest_dir);
     run_silent(cmd)
 }
 
-pub fn clone_bare(remote_url: &str, dest_dir: &Path) -> anyhow::Result<()> {
-    clone(remote_url, dest_dir, true, true)
-}
-
-pub fn clone_bare_with_fallback(repo_url: &str, dest: &Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dest.parent().unwrap_or(dest))?;
-    let https_url = format!("https://{}.git", repo_url);
-    if clone(&https_url, dest, true, false).is_ok() {
-        return Ok(());
-    }
-    clone_bare(&format_ssh_url(repo_url), dest)
-}
-
-fn repo_uses_partial_clone(repo_root: &Path) -> bool {
-    run_output_opt(repo_root, &["config", "--get", "remote.origin.promisor"]).is_some()
-        || run_output_opt(
-            repo_root,
-            &["config", "--get", "remote.origin.partialclonefilter"],
-        )
-        .is_some()
-        || run_output_opt(repo_root, &["config", "--get", "extensions.partialclone"]).is_some()
-}
-
-fn unset_config_all_if_present(repo_root: &Path, key: &str) -> anyhow::Result<()> {
-    let mut cmd = git(repo_root);
-    cmd.args(["config", "--unset-all", key]);
-    let out = cmd.output()?;
-    if out.status.success() {
-        return Ok(());
-    }
-
-    // `git config --unset-all` exits 5 when the key is missing.
-    if out.status.code() == Some(5) {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    if stderr.contains("does not exist") {
-        return Ok(());
-    }
-
-    anyhow::bail!("git command failed: {}", stderr.trim())
-}
-
-/// Backcompat migration for older `~/.pcb/bare/...` repos that were created as
-/// partial/promisor clones.
-///
-/// Sandbox builds now rely on the shared bare repo being able to serve arbitrary
-/// local commits, including unpushed sandbox refs. That does not work reliably
-/// when the bare repo is itself a partial clone: `git-upload-pack` disables lazy
-/// object fetching when serving another local repo, so the bare repo may have the
-/// commit object but still be unable to serve required trees/blobs.
-///
-/// To keep the migration transparent, we hydrate the existing bare repo in place
-/// with `git fetch --refetch` while temporarily overriding the partial-clone
-/// config for that one fetch. Only after the refetch succeeds do we clear the
-/// promisor settings permanently, committing to fully hydrated bare repos going
-/// forward.
-fn hydrate_bare_repo_to_full(bare_repo: &Path) -> anyhow::Result<()> {
-    if !repo_uses_partial_clone(bare_repo) {
-        return Ok(());
-    }
-
-    let mut cmd = git(bare_repo);
-    cmd.args([
-        "-c",
-        "remote.origin.promisor=false",
-        "-c",
-        "remote.origin.partialclonefilter=",
-        "-c",
-        "extensions.partialclone=",
-        "fetch",
-        "--refetch",
-        "origin",
-        "--tags",
-        "--force",
-        "--prune",
-        "--prune-tags",
-        "--quiet",
-        "+refs/heads/*:refs/remotes/origin/*",
-    ]);
-    run_silent(cmd)?;
-
-    unset_config_all_if_present(bare_repo, "remote.origin.promisor")?;
-    unset_config_all_if_present(bare_repo, "remote.origin.partialclonefilter")?;
-    unset_config_all_if_present(bare_repo, "extensions.partialclone")?;
-
-    Ok(())
-}
-
-pub fn fetch_in_bare_repo(bare_repo: &Path) -> anyhow::Result<()> {
-    hydrate_bare_repo_to_full(bare_repo)?;
+pub fn fetch_in_source_repo(source_repo: &Path) -> anyhow::Result<()> {
     run_in(
-        bare_repo,
+        source_repo,
         &[
             "fetch",
             "origin",
@@ -495,19 +402,17 @@ pub fn fetch_in_bare_repo(bare_repo: &Path) -> anyhow::Result<()> {
     )
 }
 
-pub fn ensure_rev_in_bare_repo(bare_repo: &Path, rev: &str) -> anyhow::Result<()> {
-    if rev_parse(bare_repo, rev).is_some() {
+pub fn ensure_rev_in_source_repo(source_repo: &Path, rev: &str) -> anyhow::Result<()> {
+    if rev_parse(source_repo, rev).is_some() {
         return Ok(());
     }
 
-    run_in(bare_repo, &["fetch", "origin", "--quiet", rev])
+    run_in(source_repo, &["fetch", "origin", "--quiet", rev])
 }
 
 pub fn archive_to_dir(repo_root: &Path, treeish: &str, dest_dir: &Path) -> anyhow::Result<()> {
-    let mut cmd = git_global();
-    cmd.arg("--git-dir")
-        .arg(repo_root)
-        .args(["archive", "--format=tar", treeish])
+    let mut cmd = git(repo_root);
+    cmd.args(["archive", "--format=tar", treeish])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -566,19 +471,14 @@ pub fn push_branch_force(repo_root: &Path, branch: &str, remote: &str) -> anyhow
     run_in(repo_root, &["push", "--force", remote, branch])
 }
 
-/// Clone a repository to a destination directory (regular clone, not bare)
-pub fn clone_repo(remote_url: &str, dest_dir: &Path) -> anyhow::Result<()> {
-    clone(remote_url, dest_dir, false, true)
-}
-
 /// Clone a repository with HTTPS, falling back to SSH
 pub fn clone_with_fallback(repo_url: &str, dest: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dest.parent().unwrap_or(dest))?;
     let https_url = format!("https://{}.git", repo_url);
-    if clone(&https_url, dest, false, false).is_ok() {
+    if clone(&https_url, dest, false).is_ok() {
         return Ok(());
     }
-    clone_repo(&format_ssh_url(repo_url), dest)
+    clone(&format_ssh_url(repo_url), dest, true)
 }
 
 /// Create or reset a branch to point at a specific ref

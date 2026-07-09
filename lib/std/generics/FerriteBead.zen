@@ -7,8 +7,6 @@ Package = enum("0201", "0402", "0603", "0805", "1206", "1210", "2010", "2512")
 Mount = enum("SMD")
 package = config(Package)
 
-# Deprecated
-resistance = config(Resistance, optional=True, help="Impedance at rated frequency (deprecated, use value)")
 dcr = config(Resistance, optional=True, help="DC resistance")
 impedance = config("value", Impedance, default=Impedance("220Ohm"), optional=True, help="Impedance at rated frequency")
 frequency = config(Frequency, default=Frequency("100MHz"), optional=True, help="Rated frequency for impedance spec")
@@ -17,18 +15,12 @@ manufacturer = config(str, optional=True, help="Manufacturer")
 mount = config(Mount, default=Mount("SMD"), optional=True, help="Mounting type")
 current = config(Current, optional=True, help="Maximum rated current")
 
-# Backwards compatibility: if resistance is specified, use it as impedance
-effective_impedance = resistance if resistance else impedance
-if resistance:
-    warn("resistance is deprecated. Use value instead.", kind="deprecated")
-
-# Ensure we have an effective impedance
-if not effective_impedance:
+if not impedance:
     error("FerriteBead requires 'value' to be specified")
 properties = {
-    "value": format_value(effective_impedance, current, frequency),
+    "value": format_value(impedance, current, frequency),
     "package": package,
-    "impedance": effective_impedance,
+    "impedance": impedance,
 }
 
 if dcr:
@@ -43,23 +35,20 @@ P2 = io(Net)
 
 
 def _symbol(package: Package):
-    return {
-        "library": "@kicad-symbols/Device.kicad_sym",
-        "name": "FerriteBead",
-    }
+    return "../kicad-symbols/Device.kicad_symdir/FerriteBead_Small.kicad_sym"
 
 
 def _footprint(package: Package) -> str:
     """Returns the resistor SMD footprint for the ferrite bead based on the package."""
     resistor_footprints = {
-        Package("0201"): "@kicad-footprints/Resistor_SMD.pretty/R_0201_0603Metric.kicad_mod",
-        Package("0402"): "@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod",
-        Package("0603"): "@kicad-footprints/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod",
-        Package("0805"): "@kicad-footprints/Resistor_SMD.pretty/R_0805_2012Metric.kicad_mod",
-        Package("1206"): "@kicad-footprints/Resistor_SMD.pretty/R_1206_3216Metric.kicad_mod",
-        Package("1210"): "@kicad-footprints/Resistor_SMD.pretty/R_1210_3225Metric.kicad_mod",
-        Package("2010"): "@kicad-footprints/Resistor_SMD.pretty/R_2010_5025Metric.kicad_mod",
-        Package("2512"): "@kicad-footprints/Resistor_SMD.pretty/R_2512_6332Metric.kicad_mod",
+        Package("0201"): "../kicad-footprints/Resistor_SMD.pretty/R_0201_0603Metric.kicad_mod",
+        Package("0402"): "../kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod",
+        Package("0603"): "../kicad-footprints/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod",
+        Package("0805"): "../kicad-footprints/Resistor_SMD.pretty/R_0805_2012Metric.kicad_mod",
+        Package("1206"): "../kicad-footprints/Resistor_SMD.pretty/R_1206_3216Metric.kicad_mod",
+        Package("1210"): "../kicad-footprints/Resistor_SMD.pretty/R_1210_3225Metric.kicad_mod",
+        Package("2010"): "../kicad-footprints/Resistor_SMD.pretty/R_2010_5025Metric.kicad_mod",
+        Package("2512"): "../kicad-footprints/Resistor_SMD.pretty/R_2512_6332Metric.kicad_mod",
     }
 
     if package not in resistor_footprints:
@@ -101,7 +90,7 @@ def _spice_args(impedance, frequency, dcr):
 Component(
     name="FB",
     part=builtin.Part(mpn=mpn, manufacturer=manufacturer) if mpn and manufacturer else None,
-    symbol=Symbol(**_symbol(package)),
+    symbol=Symbol(_symbol(package)),
     footprint=File(_footprint(package)),
     prefix="FB",
     pins={
@@ -112,7 +101,7 @@ Component(
         "spice/FerriteBead.lib",
         "FB",
         nets=[P1, P2],
-        args=_spice_args(effective_impedance, frequency, dcr),
+        args=_spice_args(impedance, frequency, dcr),
     ),
     properties=properties,
     type="ferrite_bead",

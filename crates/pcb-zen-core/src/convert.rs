@@ -2,6 +2,7 @@ use crate::lang::r#enum::EnumValue;
 use crate::lang::interface::FrozenInterfaceValue;
 use crate::lang::io_direction::IoDirection;
 use crate::lang::module::{ModulePath, find_moved_span};
+use crate::lang::net::net_kind_requires_name;
 use crate::lang::part::PartValue;
 use crate::lang::symbol::SymbolValue;
 use crate::lang::type_info::TypeInfo;
@@ -21,8 +22,7 @@ use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use starlark::values::list::ListRef;
 use starlark::values::{FrozenValue, Value, ValueLike, dict::DictRef};
 use starlark::{codemap::ResolvedSpan, errors::EvalSeverity};
-use std::collections::{BTreeMap, HashMap};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use tracing::info_span;
 
@@ -34,8 +34,12 @@ struct NetInfo {
     ports: Vec<InstanceRef>,
     /// Aggregated properties for this net.
     properties: HashMap<String, AttributeValue>,
-    /// Starlark net type name (e.g. "Net", "Power", "Ground", "NotConnected").
-    original_type_name: String,
+    /// Starlark net kind, if observed during conversion.
+    kind: Option<String>,
+}
+
+fn net_info_requires_name(kind: Option<&str>) -> bool {
+    kind.is_none_or(net_kind_requires_name)
 }
 
 /// Convert a [`FrozenModuleValue`] to a [`Schematic`].
@@ -264,54 +268,33 @@ impl ModuleConverter {
         propagate_diffpair_impedance(&mut self.net_to_info, &module_tree);
 
         // Create Net objects directly using the accumulated NetInfo.
-        // Ensure global uniqueness and stable creation order by sorting names.
-        let mut ids_and_names: Vec<(NetId, String, String)> = Vec::new();
         for (net_id, net_info) in &self.net_to_info {
-            let name = net_info
-                .name
-                .clone()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| format!("N{net_id}"));
-            ids_and_names.push((*net_id, name, net_info.original_type_name.clone()));
-        }
-
-        ids_and_names.sort_by(|a, b| a.1.cmp(&b.1));
-
-        // Guard for uniqueness (skip NotConnected nets - they're allowed to have duplicate names)
-        {
-            let mut seen: HashSet<&str> = HashSet::new();
-            for (_, name, net_type) in ids_and_names.iter() {
-                // Skip NotConnected nets from duplicate check
-                if net_type == "NotConnected" {
-                    continue;
-                }
-                if !seen.insert(name.as_str()) {
-                    let mut diagnostics = Diagnostics::default();
-                    diagnostics.push(Diagnostic::new(
-                        format!("Duplicate net name: {name}"),
-                        EvalSeverity::Error,
-                        Path::new(root_module.source_path()),
-                    ));
-                    return WithDiagnostics {
-                        output: None,
-                        diagnostics,
-                    };
-                }
+            if net_info.kind.as_deref() == Some("NotConnected") && net_info.ports.is_empty() {
+                continue;
             }
-        }
 
-        for (net_id, net_info) in &self.net_to_info {
-            // Use the recorded type_name as the kind string if present, otherwise default.
-            let net_kind = if net_info.original_type_name.is_empty() {
-                "Net".to_string()
-            } else {
-                net_info.original_type_name.clone()
-            };
+            if net_info_requires_name(net_info.kind.as_deref()) && net_info.name.is_none() {
+                let mut diagnostics = Diagnostics::default();
+                diagnostics.push(Diagnostic::new(
+                    "Net is unnamed",
+                    EvalSeverity::Error,
+                    Path::new(root_module.source_path()),
+                ));
+                return WithDiagnostics {
+                    output: None,
+                    diagnostics,
+                };
+            }
+            let net_kind = net_info.kind.clone().unwrap_or_else(|| "Net".to_string());
+            let net_name = net_info.name.clone().unwrap_or_else(|| {
+                debug_assert_eq!(net_kind, "NotConnected");
+                String::new()
+            });
 
             let mut net = Net {
                 kind: net_kind,
                 id: *net_id,
-                name: net_info.name.clone().unwrap_or_default(),
+                name: net_name,
                 ports: Vec::new(),
                 properties: HashMap::new(),
             };
@@ -341,11 +324,10 @@ impl ModuleConverter {
                     .net_to_info
                     .get(&net_id)
                     .expect("NetInfo must exist for model net");
-                let name = net_info
-                    .name
-                    .clone()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| format!("N{net_id}"));
+                let name = net_info.name.clone().unwrap_or_else(|| {
+                    debug_assert_eq!(net_info.kind.as_deref(), Some("NotConnected"));
+                    String::new()
+                });
                 net_names.push(AttributeValue::String(name));
             }
             comp_inst.add_attribute(crate::attrs::MODEL_NETS, AttributeValue::Array(net_names));
@@ -573,10 +555,9 @@ impl ModuleConverter {
             inst.add_attribute(key.clone(), to_attribute_value(*val)?);
         }
 
-        // Consolidate DNP handling for modules: check legacy properties
-        // (modules don't have dnp field, they set it via properties)
-        let legacy_keys = ["do_not_populate", "Do_not_populate", "DNP", "dnp"];
-        let is_dnp = legacy_keys.iter().any(|&key| {
+        // Consolidate DNP handling for modules. `Module(..., dnp=True)` is stored
+        // as a module property by the loader.
+        let is_dnp = ["dnp"].iter().any(|&key| {
             module
                 .properties()
                 .get(key)
@@ -634,34 +615,32 @@ impl ModuleConverter {
         let module_path = instance_ref.instance_path.join(".");
 
         for (net_id, introduced_net) in module.introduced_nets().iter() {
-            let scoped_name = if module_path.is_empty() {
-                introduced_net.final_name.clone()
-            } else {
-                format!("{module_path}.{}", introduced_net.final_name)
-            };
+            let local_name = introduced_net.name.as_str();
+            if !local_name.is_empty() {
+                let scoped_name = if module_path.is_empty() {
+                    local_name.to_string()
+                } else {
+                    format!("{module_path}.{local_name}")
+                };
 
-            // If this net already has a name (from a parent module), don't overwrite.
-            // Instead, record the scoped name as an alias pointing to the canonical name.
-            if let Some(canonical_name) = self
-                .net_to_info
-                .get(net_id)
-                .and_then(|info| info.name.clone())
-            {
-                if scoped_name != canonical_name {
-                    self.net_name_aliases.insert(scoped_name, canonical_name);
+                // If this net already has a name (from a parent module), don't overwrite.
+                // Instead, record the scoped name as an alias pointing to the canonical name.
+                if let Some(canonical_name) = self
+                    .net_to_info
+                    .get(net_id)
+                    .and_then(|info| info.name.clone())
+                {
+                    if scoped_name != canonical_name {
+                        self.net_name_aliases.insert(scoped_name, canonical_name);
+                    }
+                } else {
+                    let info = self.net_info_mut(*net_id);
+                    info.name = Some(scoped_name);
                 }
-            } else {
-                let info = self.net_info_mut(*net_id);
-                info.name = Some(scoped_name);
             }
 
-            // Set original_type_name from introduced_nets if not already set.
-            // Since parent modules are processed before children (BTreeMap ordering),
-            // the creating module's original type is captured first.
             let info = self.net_info_mut(*net_id);
-            if info.original_type_name.is_empty() {
-                info.original_type_name = introduced_net.net_type.clone();
-            }
+            info.kind.get_or_insert_with(|| introduced_net.kind.clone());
         }
 
         // Add direct child components
@@ -684,49 +663,30 @@ impl ModuleConverter {
     fn update_net(&mut self, net: &FrozenNetValue, instance_ref: &InstanceRef) {
         let net_info = self.net_info_mut(net.id());
         net_info.ports.push(instance_ref.clone());
-        if net_info.original_type_name.is_empty() {
-            net_info.original_type_name = net.net_type_name().to_string();
-        }
+        net_info
+            .kind
+            .get_or_insert_with(|| net.net_kind_name().to_string());
 
-        // For auto-named NotConnected nets, always use a stable port-derived name.
-        // This may overwrite the module-introduced name (e.g. `NC_2`), which is not stable
-        // across evaluation when unrelated nets are inserted/removed.
-        if net_info.original_type_name == "NotConnected"
+        // For unnamed NotConnected nets, use a stable port-derived name when possible.
+        if net_info.kind.as_deref() == Some("NotConnected")
             && net.original_name_opt().is_none()
             && net_info.ports.len() == 1
         {
-            net_info.name = stable_single_port_not_connected_scoped_name(instance_ref)
-                .or_else(|| Some(format!("N{}", net.id())));
+            net_info.name = stable_single_port_not_connected_scoped_name(instance_ref);
         }
 
         // Honor explicit names on nets encountered during connections unless already set.
         if net_info.name.is_none() {
             let local = net.name();
-            let module_pref = if instance_ref.instance_path.len() >= 2 {
-                let module_segments =
-                    &instance_ref.instance_path[..instance_ref.instance_path.len() - 2];
-                if module_segments.is_empty() {
-                    None
+            if !local.is_empty() {
+                let module_len = instance_ref.instance_path.len().saturating_sub(2);
+                let module_segments = &instance_ref.instance_path[..module_len];
+                net_info.name = Some(if module_segments.is_empty() {
+                    local.to_string()
                 } else {
-                    Some(module_segments.join("."))
-                }
-            } else {
-                None
-            };
-
-            let computed_name = if local.is_empty() {
-                if let Some(pref) = &module_pref {
-                    format!("{pref}.N{}", net.id())
-                } else {
-                    String::new()
-                }
-            } else if let Some(pref) = &module_pref {
-                format!("{pref}.{local}")
-            } else {
-                local.to_string()
-            };
-
-            net_info.name = Some(computed_name);
+                    format!("{}.{local}", module_segments.join("."))
+                });
+            }
         }
 
         // Convert regular properties to AttributeValue if not already present.
@@ -836,6 +796,8 @@ impl ModuleConverter {
         if !symbol_value.is_none()
             && let Some(symbol) = symbol_value.downcast_ref::<SymbolValue>()
         {
+            comp_inst.internal_connectivity = symbol.internal_connectivity().clone();
+
             // Add symbol_name for backwards compatibility
             if let Some(name) = symbol.name() {
                 comp_inst.add_attribute(
@@ -1049,34 +1011,29 @@ impl ModuleConverter {
         }
 
         for split_idx in 1..segments.len() {
-            let descendant_ref =
-                segments[..split_idx]
-                    .iter()
-                    .try_fold(instance_ref, |current_ref, part| {
-                        let child_ref = self
-                            .schematic
-                            .instances
-                            .get(current_ref)?
-                            .children
-                            .get(*part)?;
-                        let child_instance = self.schematic.instances.get(child_ref)?;
-                        (child_instance.kind == InstanceKind::Module).then_some(child_ref)
-                    })?;
+            // The prefix must resolve to a descendant module instance.
+            segments[..split_idx]
+                .iter()
+                .try_fold(instance_ref, |current_ref, part| {
+                    let child_ref = self
+                        .schematic
+                        .instances
+                        .get(current_ref)?
+                        .children
+                        .get(*part)?;
+                    let child_instance = self.schematic.instances.get(child_ref)?;
+                    (child_instance.kind == InstanceKind::Module).then_some(child_ref)
+                })?;
 
-            let Some(descendant_module) =
-                self.module_instances
-                    .iter()
-                    .find_map(|(candidate_ref, module)| {
-                        (candidate_ref == descendant_ref).then_some(module)
-                    })
-            else {
-                continue;
-            };
-
-            let descendant_local_key = format!("{}.{}", segments[split_idx..].join("."), suffix);
-            if descendant_module
-                .positions()
-                .contains_key(descendant_local_key.as_str())
+            // The remainder must name an actual net. Override keys are
+            // `<module path>.<global net name>.<index>` because converted net-symbol
+            // keys use global net names (e.g. a descendant's local `IN_GD.0` comment
+            // converts to `sym:VBUS_RAW#0` when the parent connects `IN_GD=VBUS_RAW`).
+            let rest = segments[split_idx..].join(".");
+            if self
+                .net_to_info
+                .values()
+                .any(|info| info.name.as_deref() == Some(rest.as_str()))
             {
                 return Some(format!("sym:{}#{}", net_part, suffix));
             }

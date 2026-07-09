@@ -34,6 +34,52 @@ use super::validation::validate_identifier_name;
 
 pub type NetId = u64;
 
+pub(crate) fn compatible_net_type_view<'a>(actual: &str, expected: &'a str) -> Option<&'a str> {
+    (actual != expected && expected == "Net").then_some(expected)
+}
+
+pub(crate) fn net_type_name_from_value<'v>(value: Value<'v>) -> Option<&'v str> {
+    if let Some(net) = value.downcast_ref::<NetValue<'v>>() {
+        Some(net.net_type_name())
+    } else if let Some(net) = value.downcast_ref::<FrozenNetValue>() {
+        Some(net.net_type_name())
+    } else {
+        None
+    }
+}
+
+pub(crate) fn net_matches_type_name(value: Value<'_>, expected_type_name: &str) -> Option<bool> {
+    if let Some(net) = value.downcast_ref::<NetValue<'_>>() {
+        Some(net.is_open() || net.net_type_name() == expected_type_name)
+    } else {
+        value
+            .downcast_ref::<FrozenNetValue>()
+            .map(|net| net.is_open() || net.net_type_name() == expected_type_name)
+    }
+}
+
+pub(crate) fn net_kind_requires_name(kind: &str) -> bool {
+    kind != "NotConnected"
+}
+
+#[cfg(test)]
+mod net_type_view_tests {
+    use super::compatible_net_type_view;
+
+    #[test]
+    fn compatible_net_type_view_is_not_canonical_promotion() {
+        for (actual, expected, view) in [
+            ("Power", "Net", Some("Net")),
+            ("Ground", "Net", Some("Net")),
+            ("Power", "Power", None),
+            ("Net", "Power", None),
+            ("Ground", "Power", None),
+        ] {
+            assert_eq!(compatible_net_type_view(actual, expected), view);
+        }
+    }
+}
+
 /// Global atomic counter for net IDs. Must be global (not thread-local) to ensure
 /// unique IDs across all threads when using parallel evaluation (rayon).
 static NEXT_NET_ID: AtomicU64 = AtomicU64::new(1);
@@ -72,6 +118,37 @@ pub fn reset_net_id_counter() {
 
 #[derive(
     Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    ProvidesStaticType,
+    Allocative,
+    Trace,
+    Freeze,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ConnectionIntent {
+    #[default]
+    Connected,
+    Open,
+}
+
+impl ConnectionIntent {
+    fn is_connected(&self) -> bool {
+        *self == Self::Connected
+    }
+
+    fn is_open(&self) -> bool {
+        *self == Self::Open
+    }
+}
+
+#[derive(
+    Clone,
     PartialEq,
     Eq,
     ProvidesStaticType,
@@ -90,19 +167,16 @@ pub fn reset_net_id_counter() {
 pub struct NetValueGen<V> {
     /// The globally unique identifier for this net
     pub(crate) net_id: NetId,
-    /// The final name after deduplication
+    /// The source-level name for this net, or empty while awaiting assignment inference.
     pub(crate) name: String,
     /// The explicit constructor-provided leaf name used when cloning templates.
     #[serde(skip, default)]
     pub(crate) template_name: Option<String>,
-    /// The name originally requested before deduplication
+    /// The explicit constructor-provided source name, if any.
     pub original_name: Option<String>,
     /// Whether this net may adopt an assigned variable name after construction.
     #[serde(skip, default)]
     pub(crate) assignment_inferable: bool,
-    /// Whether this net was constructed from another net value.
-    #[serde(skip, default)]
-    pub(crate) derived_from_base_net: bool,
     /// Whether this net value has been bound to a variable.
     #[serde(skip, default)]
     #[freeze(identity)]
@@ -114,11 +188,6 @@ pub struct NetValueGen<V> {
     #[trace(unsafe_ignore)]
     #[allocative(skip)]
     pub(crate) inferred_name: OnceLock<String>,
-    #[serde(skip, default)]
-    #[freeze(identity)]
-    #[trace(unsafe_ignore)]
-    #[allocative(skip)]
-    pub(crate) inferred_original_name: OnceLock<Option<String>>,
     /// Source file path where this net was created.
     #[serde(skip, default)]
     pub(crate) declaration_path: String,
@@ -130,6 +199,9 @@ pub struct NetValueGen<V> {
     pub(crate) declaration_span: Option<starlark::codemap::ResolvedSpan>,
     /// The type name (e.g., "Net", "Power", "Ground")
     pub(crate) type_name: String,
+    /// Whether this net is intended to be connected or intentionally left open.
+    #[serde(default, skip_serializing_if = "ConnectionIntent::is_connected")]
+    pub(crate) connection_intent: ConnectionIntent,
     /// Properties (including symbol, voltage, impedance, etc. if provided)
     pub(crate) properties: SmallMap<String, V>,
 }
@@ -238,9 +310,7 @@ impl<V> NetValueGen<V> {
     }
 
     fn resolved_original_name_opt(&self) -> Option<&str> {
-        self.inferred_original_name
-            .get()
-            .map_or(self.original_name.as_deref(), |name| name.as_deref())
+        self.original_name.as_deref()
     }
 
     fn clone_once_lock<T: Clone>(value: &OnceLock<T>) -> OnceLock<T> {
@@ -253,7 +323,13 @@ impl<V> NetValueGen<V> {
 }
 
 impl<'v, V: ValueLike<'v>> NetValueGen<V> {
-    fn alloc_clone(&self, heap: Heap<'v>, net_id: NetId, type_name: String) -> Value<'v> {
+    fn alloc_clone(
+        &self,
+        heap: Heap<'v>,
+        net_id: NetId,
+        type_name: String,
+        connection_intent: ConnectionIntent,
+    ) -> Value<'v> {
         let properties: SmallMap<String, Value<'v>> = self
             .properties
             .iter()
@@ -266,13 +342,12 @@ impl<'v, V: ValueLike<'v>> NetValueGen<V> {
             template_name: self.template_name.clone(),
             original_name: self.original_name_opt().map(str::to_owned),
             assignment_inferable: self.assignment_inferable,
-            derived_from_base_net: self.derived_from_base_net,
             was_bound: Self::clone_once_lock(&self.was_bound),
             inferred_name: Self::clone_once_lock(&self.inferred_name),
-            inferred_original_name: Self::clone_once_lock(&self.inferred_original_name),
             declaration_path: self.declaration_path.clone(),
             declaration_span: self.declaration_span,
             type_name,
+            connection_intent,
             properties,
         })
     }
@@ -294,14 +369,13 @@ impl<'v, V: ValueLike<'v>> NetValueGen<V> {
             return Ok(());
         }
 
-        let (final_name, original_name) = if let Some(ctx) = eval.context_value() {
+        let final_name = if let Some(ctx) = eval.context_value() {
             ctx.infer_net_name(self.net_id, inferred_name)?
         } else {
-            (inferred_name.to_owned(), None)
+            inferred_name.to_owned()
         };
 
         let _ignore = self.inferred_name.set(final_name.clone());
-        let _ignore = self.inferred_original_name.set(original_name);
 
         Ok(())
     }
@@ -314,13 +388,12 @@ impl<'v, V: ValueLike<'v>> NetValueGen<V> {
             template_name: None,
             original_name: None,
             assignment_inferable: false,
-            derived_from_base_net: false,
             was_bound: OnceLock::new(),
             inferred_name: OnceLock::new(),
-            inferred_original_name: OnceLock::new(),
             declaration_path: String::new(),
             declaration_span: None,
             type_name: "Net".to_string(),
+            connection_intent: ConnectionIntent::Connected,
             properties,
         }
     }
@@ -351,6 +424,19 @@ impl<'v, V: ValueLike<'v>> NetValueGen<V> {
         &self.type_name
     }
 
+    /// Returns the serialized/netlist kind for this net.
+    pub fn net_kind_name(&self) -> &str {
+        if self.connection_intent.is_open() {
+            "NotConnected"
+        } else {
+            &self.type_name
+        }
+    }
+
+    pub(crate) fn is_open(&self) -> bool {
+        self.connection_intent.is_open()
+    }
+
     /// Return the properties map of this net instance.
     pub fn properties(&self) -> &SmallMap<String, V> {
         &self.properties
@@ -364,7 +450,7 @@ impl<'v, V: ValueLike<'v>> NetValueGen<V> {
         self.declaration_span
     }
 
-    /// Return the original name as Option (None if auto-generated)
+    /// Return the explicit constructor-provided source name, if any.
     pub fn original_name_opt(&self) -> Option<&str> {
         self.resolved_original_name_opt()
     }
@@ -373,28 +459,51 @@ impl<'v, V: ValueLike<'v>> NetValueGen<V> {
         self.template_name.as_deref()
     }
 
-    pub(crate) fn derived_from_base_net(&self) -> bool {
-        self.derived_from_base_net
-    }
-
     pub(crate) fn was_bound(&self) -> bool {
         self.was_bound.get().is_some()
     }
 
+    pub(crate) fn is_external_reference(&self) -> bool {
+        self.was_bound()
+    }
+
+    pub(crate) fn is_template_owned(&self) -> bool {
+        !self.was_bound()
+    }
+
     pub(crate) fn skips_implicit_checks(&self) -> bool {
-        self.derived_from_base_net() || self.was_bound()
+        self.is_external_reference()
     }
 
     /// Create a new net with the same fields but a fresh net ID.
     /// This avoids deep copying - properties are shared via Value references.
     pub fn with_new_id(&self, heap: Heap<'v>) -> Value<'v> {
-        self.alloc_clone(heap, generate_net_id(), self.type_name.clone())
+        self.alloc_clone(
+            heap,
+            generate_net_id(),
+            self.type_name.clone(),
+            self.connection_intent,
+        )
     }
 
-    /// Create a new net with the same ID/name/properties but a different type name.
-    /// Used for casting between net types (e.g., Power -> Net).
+    /// Create a typed compatibility view with the same identity and properties.
     pub fn with_net_type(&self, new_type_name: &str, heap: Heap<'v>) -> Value<'v> {
-        self.alloc_clone(heap, self.net_id, new_type_name.to_string())
+        self.alloc_clone(
+            heap,
+            self.net_id,
+            new_type_name.to_string(),
+            self.connection_intent,
+        )
+    }
+
+    /// Materialize this net on the current heap without changing its type or intent.
+    pub fn to_current_heap(&self, heap: Heap<'v>) -> Value<'v> {
+        self.alloc_clone(
+            heap,
+            self.net_id,
+            self.type_name.clone(),
+            self.connection_intent,
+        )
     }
 
     /// Create a new net with identical runtime identity but updated declaration metadata.
@@ -416,13 +525,12 @@ impl<'v, V: ValueLike<'v>> NetValueGen<V> {
             template_name: self.template_name.clone(),
             original_name: self.original_name_opt().map(str::to_owned),
             assignment_inferable: self.assignment_inferable,
-            derived_from_base_net: self.derived_from_base_net,
             was_bound: Self::clone_once_lock(&self.was_bound),
             inferred_name: Self::clone_once_lock(&self.inferred_name),
-            inferred_original_name: Self::clone_once_lock(&self.inferred_original_name),
             declaration_path: declaration_path.into(),
             declaration_span,
             type_name: self.type_name.clone(),
+            connection_intent: self.connection_intent,
             properties,
         })
     }
@@ -449,6 +557,80 @@ fn builtin_net_methods(methods: &mut MethodsBuilder) {
     fn r#type<'v>(this: &NetValue<'v>) -> starlark::Result<String> {
         Ok(this.net_type_name().to_string())
     }
+}
+
+pub(crate) fn instantiate_not_connected<'v>(
+    args: &Arguments<'v, '_>,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> starlark::Result<Value<'v>> {
+    let mut ignored_name = None;
+    let positional_values: Vec<Value<'v>> = args.positions(eval.heap())?.collect();
+    match positional_values.as_slice() {
+        [] => {}
+        [value] => {
+            ignored_name = Some(value.unpack_str().ok_or_else(|| {
+                starlark::Error::new_other(anyhow::anyhow!(
+                    "NotConnected() expects an optional name string, got {}",
+                    value.get_type()
+                ))
+            })?);
+        }
+        _ => {
+            return Err(starlark::Error::new_other(anyhow::anyhow!(
+                "NotConnected() accepts at most one positional argument"
+            )));
+        }
+    }
+
+    for (arg_name, value) in args.names_map()? {
+        match arg_name.as_str() {
+            "name" => {
+                ignored_name = Some(value.unpack_str().ok_or_else(|| {
+                    starlark::Error::new_other(anyhow::anyhow!(
+                        "NotConnected() `name` must be string, got {}",
+                        value.get_type()
+                    ))
+                })?);
+            }
+            other => {
+                return Err(starlark::Error::new_other(anyhow::anyhow!(
+                    "NotConnected() got unexpected named argument `{other}`"
+                )));
+            }
+        }
+    }
+
+    let (declaration_path, declaration_span) = eval
+        .call_stack_top_location()
+        .map(|loc| (loc.file.filename().to_string(), Some(loc.resolve_span())))
+        .unwrap_or_else(|| (eval.source_path().unwrap_or_default(), None));
+
+    if ignored_name.is_some() {
+        eval.add_diagnostic(
+            crate::Diagnostic::categorized(
+                &declaration_path,
+                "NotConnected does not support names; name ignored",
+                "net.not_connected_name_ignored",
+                starlark::errors::EvalSeverity::Warning,
+            )
+            .with_span(declaration_span),
+        );
+    }
+
+    Ok(eval.heap().alloc(NetValue {
+        net_id: generate_net_id(),
+        name: String::new(),
+        template_name: None,
+        original_name: None,
+        assignment_inferable: false,
+        was_bound: OnceLock::new(),
+        inferred_name: OnceLock::new(),
+        declaration_path,
+        declaration_span,
+        type_name: "Net".to_string(),
+        connection_intent: ConnectionIntent::Open,
+        properties: SmallMap::new(),
+    }))
 }
 
 /// A callable type constructor for creating typed nets
@@ -540,16 +722,23 @@ impl<'v> NetType<'v> {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) enum NetInstantiateIntent {
+    Connected,
+    PreserveBase,
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct NetInstantiateOptions {
     pub(crate) should_register: bool,
     pub(crate) assignment_inferable: bool,
+    pub(crate) intent: NetInstantiateIntent,
 }
 
 impl<'v, V: ValueLike<'v>> NetTypeGen<V> {
     pub(crate) fn instantiate(
         &self,
         base_net: Option<&NetValue<'v>>,
-        explicit_name: Option<String>,
+        mut explicit_name: Option<String>,
         field_values: SmallMap<String, Value<'v>>,
         options: NetInstantiateOptions,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -560,35 +749,61 @@ impl<'v, V: ValueLike<'v>> NetTypeGen<V> {
             .map(|loc| (loc.file.filename().to_string(), Some(loc.resolve_span())))
             .unwrap_or_else(|| (eval.source_path().unwrap_or_default(), None));
 
+        let base_intent = base_net
+            .map(|net| net.connection_intent)
+            .unwrap_or(ConnectionIntent::Connected);
+        let connection_intent = match options.intent {
+            NetInstantiateIntent::Connected => ConnectionIntent::Connected,
+            NetInstantiateIntent::PreserveBase => base_intent,
+        };
+        let source_names_enabled = !connection_intent.is_open();
+        if !source_names_enabled && explicit_name.is_some() {
+            eval.add_diagnostic(
+                crate::Diagnostic::categorized(
+                    &declaration_path,
+                    "NotConnected does not support names; name ignored",
+                    "net.not_connected_name_ignored",
+                    starlark::errors::EvalSeverity::Warning,
+                )
+                .with_span(declaration_span),
+            );
+            explicit_name = None;
+        }
+
+        let source_named_base = source_names_enabled.then_some(base_net).flatten();
         let requested_name = explicit_name
             .clone()
-            .or_else(|| base_net.and_then(|n| n.original_name_opt().map(str::to_owned)));
+            .or_else(|| source_named_base.and_then(|n| n.original_name_opt().map(str::to_owned)));
         let runtime_name = requested_name
             .clone()
-            .or_else(|| base_net.map(|n| n.name().to_owned()));
-        let template_name_for_new_net = (!options.assignment_inferable)
-            .then(|| explicit_name.as_ref().cloned())
-            .flatten();
+            .or_else(|| source_named_base.map(|n| n.name().to_owned()));
+        let assignment_inferable = options.assignment_inferable && source_names_enabled;
+        let template_name = if assignment_inferable {
+            None
+        } else {
+            explicit_name.clone()
+        };
 
         if let Some(ref n) = requested_name {
             validate_identifier_name(n, "Net name")?;
         }
 
-        let (template_name, original_name, mut properties, net_id) = if let Some(n) = base_net {
-            (
-                n.template_name_opt().map(str::to_owned),
-                requested_name,
-                n.properties.clone(),
-                n.net_id,
-            )
-        } else {
-            (
-                template_name_for_new_net,
-                requested_name,
-                SmallMap::new(),
-                generate_net_id(),
-            )
-        };
+        let (template_name, original_name, mut properties, net_id) =
+            if let Some(base_net) = base_net {
+                (
+                    source_named_base.and_then(|n| n.template_name_opt().map(str::to_owned)),
+                    requested_name,
+                    base_net.properties.clone(),
+                    base_net.net_id,
+                )
+            } else {
+                (
+                    template_name,
+                    requested_name,
+                    SmallMap::new(),
+                    generate_net_id(),
+                )
+            };
 
         for (field_name, field_spec) in &self.fields {
             let provided_value = field_values.get(field_name).copied();
@@ -630,19 +845,20 @@ impl<'v, V: ValueLike<'v>> NetTypeGen<V> {
         }
 
         let net_name = runtime_name.unwrap_or_default();
-        let call_stack = eval.call_stack();
+        let was_bound = base_net
+            .map(|net| net.cloned_bound_marker())
+            .unwrap_or_default();
         let final_name = if options.should_register {
             eval.module()
                 .extra_value()
                 .and_then(|e| e.downcast_ref::<ContextValue>())
                 .map(|ctx| {
-                    ctx.register_net(
-                        net_id,
-                        &net_name,
-                        options.assignment_inferable,
-                        &self.type_name,
-                        call_stack.clone(),
-                    )
+                    let kind = if connection_intent.is_open() {
+                        "NotConnected"
+                    } else {
+                        &self.type_name
+                    };
+                    ctx.register_net(net_id, &net_name, assignment_inferable, kind)
                 })
                 .transpose()
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?
@@ -651,37 +867,18 @@ impl<'v, V: ValueLike<'v>> NetTypeGen<V> {
             net_name.clone()
         };
 
-        if base_net.is_none() && !net_name.is_empty() {
-            let legacy_suffix = match self.type_name.as_str() {
-                "Power" => Some("VCC"),
-                "Ground" => Some("GND"),
-                _ => None,
-            };
-
-            if let Some(suffix) = legacy_suffix
-                && let Some(ctx) = eval
-                    .module()
-                    .extra_value()
-                    .and_then(|e| e.downcast_ref::<ContextValue>())
-            {
-                let old_name = format!("{net_name}_{suffix}");
-                ctx.add_moved_directive(old_name, net_name.clone(), true);
-            }
-        }
-
         Ok(heap.alloc(NetValue {
             net_id,
             name: final_name,
             template_name,
             original_name,
-            assignment_inferable: options.assignment_inferable,
-            derived_from_base_net: base_net.is_some(),
-            was_bound: OnceLock::new(),
+            assignment_inferable,
+            was_bound,
             inferred_name: OnceLock::new(),
-            inferred_original_name: OnceLock::new(),
             declaration_path,
             declaration_span,
             type_name: self.type_name.clone(),
+            connection_intent,
             properties,
         }))
     }
@@ -737,7 +934,6 @@ impl<'v, V: ValueLike<'v>> NetTypeGen<V> {
     /// Returns the runtime parameter specification for parsing arguments
     fn parameters_spec(&self) -> ParametersSpec<FrozenValue> {
         let mut named_params = vec![
-            ("NET", ParametersSpecParam::Optional),
             ("name", ParametersSpecParam::Optional),
             ("__register", ParametersSpecParam::Optional),
         ];
@@ -751,7 +947,7 @@ impl<'v, V: ValueLike<'v>> NetTypeGen<V> {
             [("value", ParametersSpecParam::Optional)], // positional-only - accepts string or NetValue
             [],                                         // pos_or_named (args)
             false,
-            named_params, // named-only (NET, name + fields + __register)
+            named_params, // named-only (name + fields + __register)
             false,
         )
     }
@@ -863,6 +1059,7 @@ pub(crate) fn instantiate_generated_net<'v>(
             NetInstantiateOptions {
                 should_register,
                 assignment_inferable,
+                intent: NetInstantiateIntent::Connected,
             },
             eval,
         );
@@ -876,6 +1073,7 @@ pub(crate) fn instantiate_generated_net<'v>(
             NetInstantiateOptions {
                 should_register,
                 assignment_inferable,
+                intent: NetInstantiateIntent::Connected,
             },
             eval,
         );
@@ -886,30 +1084,6 @@ pub(crate) fn instantiate_generated_net<'v>(
         spec.get_type()
     )
     .into())
-}
-
-fn emit_net_keyword_deprecation<'v>(eval: &Evaluator<'v, '_, '_>, type_name: &str) {
-    let message = format!(
-        "{type_name}() keyword argument `NET=` is deprecated; use the positional form `{type_name}(other_net)` instead"
-    );
-    let (path, span) = match eval.call_stack_top_location() {
-        Some(location) => (
-            location.filename().to_owned(),
-            Some(location.resolve_span()),
-        ),
-        None => (eval.source_path().unwrap_or_default(), None),
-    };
-
-    eval.add_diagnostic(
-        crate::Diagnostic::categorized(
-            &path,
-            &message,
-            "deprecated.net_constructor_kwarg",
-            starlark::errors::EvalSeverity::Warning,
-        )
-        .with_span(span)
-        .with_call_stack(Some(eval.call_stack())),
-    );
 }
 
 #[starlark_value(type = "NetType")]
@@ -928,9 +1102,8 @@ where
             .parser(args, eval, |param_parser, eval| {
                 let type_name = self.instance_ty_name();
 
-                // Parse arguments: positional value, NET= keyword, name= keyword, and field values
+                // Parse arguments: positional value, name= keyword, and field values
                 let positional_value: Option<Value> = param_parser.next_opt()?;
-                let net_keyword: Option<Value> = param_parser.next_opt()?;
                 let name_keyword: Option<Value> = param_parser.next_opt()?;
 
                 // Parse hidden __register parameter (for internal use only)
@@ -978,28 +1151,10 @@ where
                     }
                 }
 
-                if let Some(v) = net_keyword {
-                    let nv = NetValue::from_value(v).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "{}() NET= expects Net value, got {}",
-                            type_name,
-                            v.get_type()
-                        )
-                    })?;
-                    if base_net.is_some() {
-                        return Err(anyhow::anyhow!(
-                            "{}() cannot provide both a positional Net and NET=",
-                            type_name
-                        )
-                        .into());
-                    }
-                    base_net = Some(nv);
-                    emit_net_keyword_deprecation(eval, &type_name);
-                }
-
                 // Choose requested name: name= overrides positional string, which overrides base net's original name
                 let explicit_name = name_from_kw.or(name_from_pos);
-                let assignment_inferable = explicit_name.is_none() && base_net.is_none();
+                let assignment_inferable =
+                    explicit_name.is_none() && base_net.is_none_or(NetValue::is_open);
 
                 self.instantiate(
                     base_net,
@@ -1008,6 +1163,7 @@ where
                     NetInstantiateOptions {
                         should_register,
                         assignment_inferable,
+                        intent: NetInstantiateIntent::Connected,
                     },
                     eval,
                 )
@@ -1091,9 +1247,6 @@ struct NetTypeMatcher {
 #[starlark::type_matcher]
 impl TypeMatcher for NetTypeMatcher {
     fn matches(&self, value: Value) -> bool {
-        match NetValue::from_value(value) {
-            Some(net) => net.type_name == self.type_name,
-            None => false,
-        }
+        net_matches_type_name(value, &self.type_name).unwrap_or(false)
     }
 }

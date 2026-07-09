@@ -1,3 +1,8 @@
+pub mod board_array;
+pub mod board_array_auto;
+pub mod bom_edit;
+pub mod cpl;
+pub mod dfm;
 pub mod html_export;
 pub mod info;
 pub mod outline;

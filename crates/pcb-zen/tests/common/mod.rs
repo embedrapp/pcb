@@ -3,11 +3,7 @@ use std::path::{Path, PathBuf};
 use pcb_zen_core::WithDiagnostics;
 
 pub const WORKSPACE_TOML: &str = r#"[workspace]
-pcb-version = "0.3"
-
-[dependencies]
-"gitlab.com/kicad/libraries/kicad-symbols" = "9.0.3"
-"gitlab.com/kicad/libraries/kicad-footprints" = "9.0.3"
+pcb-version = "0.4"
 "#;
 
 /// Utility to build an isolated Starlark project for integration tests.
@@ -24,7 +20,7 @@ pcb-version = "0.3"
 /// // Write a sub-module.
 /// env.add_file(
 ///     "sub.zen",
-///     r#"Component(footprint = "TEST:0402", pins = {"1": PinSpec("p", "1")})"#,
+///     r#"Component(footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod"), pins = {"1": PinSpec("p", "1")})"#,
 /// );
 /// // Write a top-level module that loads the sub-module.
 /// env.add_file(
@@ -116,9 +112,9 @@ impl TestProject {
         let top_path = self.root().join(top_rel_path);
 
         let file_provider = pcb_zen_core::DefaultFileProvider::new();
-        let mut workspace_info =
+        let workspace_info =
             pcb_zen::get_workspace_info(&file_provider, &top_path).expect("get workspace info");
-        let res = pcb_zen::resolve_dependencies(&mut workspace_info, false, false)
+        let res = pcb_zen::resolve_workspace_dependencies(workspace_info, &top_path, false)
             .expect("dependency resolution");
 
         // We rely on resolution and allow the evaluator to fetch missing modules
@@ -146,7 +142,7 @@ impl TestProject {
     /// -------
     /// ```text
     /// # --- sub.zen
-    /// Component(symbol = Symbol(library="C146731.kicad_sym", name="C146731"), footprint = "SMD:0805")
+    /// Component(symbol = Symbol(library="C146731.kicad_sym", name="C146731"), footprint = File("@kicad-footprints/Capacitor_SMD.pretty/C_0805_2012Metric.kicad_mod"))
     /// # --- top.zen
     /// Sub = Module("sub.zen")
     /// Sub()
@@ -188,7 +184,7 @@ impl TestProject {
 /// let env = TestProject::new();
 /// env.add_files_from_blob(r"""
 /// # --- sub.zen
-/// Component(footprint = "TEST:0402", pins = {"1": PinSpec("p", "1")})
+/// Component(footprint = File("@kicad-footprints/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod"), pins = {"1": PinSpec("p", "1")})
 /// # --- top.zen
 /// Sub = Module("sub.zen")
 /// Sub()

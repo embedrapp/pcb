@@ -303,13 +303,38 @@ impl<'a> Parser<'a> {
     fn parse_line_property(&self, s: &str) -> Result<LineProperty> {
         match s {
             "SOLID" => Ok(LineProperty::Solid),
-            "DASHED" => Ok(LineProperty::Dashed),
             "DOTTED" => Ok(LineProperty::Dotted),
+            "DASHED" => Ok(LineProperty::Dashed),
+            "CENTER" => Ok(LineProperty::Center),
+            "PHANTOM" => Ok(LineProperty::Phantom),
+            "ERASE" => Ok(LineProperty::Erase),
             _ => Err(Ipc2581Error::InvalidAttribute(format!(
                 "Unknown lineProperty: {}",
                 s
             ))),
         }
+    }
+
+    fn parse_feature_line_desc(
+        &self,
+        node: &Node,
+        units: Units,
+    ) -> Result<(f64, Option<LineEnd>, Option<LineProperty>)> {
+        let line_width = self
+            .attr(node, "lineWidth")
+            .map(|s| self.parse_f64_str_with_units(s, units))
+            .transpose()?
+            .unwrap_or(0.25);
+        let line_end = self
+            .attr(node, "lineEnd")
+            .map(|s| self.parse_line_end(s))
+            .transpose()?;
+        let line_property = self
+            .attr(node, "lineProperty")
+            .map(|s| self.parse_line_property(s))
+            .transpose()?;
+
+        Ok((line_width, line_end, line_property))
     }
 
     fn parse_dictionary_fill_desc(&mut self, _node: &Node) -> Result<DictionaryFillDesc> {
@@ -661,30 +686,40 @@ impl<'a> Parser<'a> {
                     },
                 },
             )?)),
-            "Contour" => {
-                // Parse Polygon and Cutouts
-                let polygon_node = self
-                    .element_children(node)
-                    .find(|n| self.name(n) == "Polygon")
-                    .ok_or(Ipc2581Error::MissingElement("Polygon"))?;
-
-                let polygon = self.parse_polygon(&polygon_node, units)?;
-
-                let cutout_nodes = self
-                    .element_children(node)
-                    .filter(|n| self.name(n) == "Cutout")
-                    .collect::<Vec<_>>();
-                let cutouts = cutout_nodes
-                    .into_iter()
-                    .map(|n| self.parse_polygon(&n, units))
-                    .collect::<Result<Vec<_>>>()?;
-
-                Ok(StandardPrimitive::Contour(Contour { polygon, cutouts }))
-            }
+            "Contour" => Ok(StandardPrimitive::Contour(self.parse_contour(node, units)?)),
             name => Err(Ipc2581Error::InvalidStructure(format!(
                 "Unknown standard primitive: {}",
                 name
             ))),
+        }
+    }
+
+    fn parse_contour(&mut self, node: &Node, units: Units) -> Result<Contour> {
+        let polygon_node = self
+            .element_children(node)
+            .find(|n| self.name(n) == "Polygon")
+            .ok_or(Ipc2581Error::MissingElement("Polygon"))?;
+
+        let polygon = self.parse_polygon(&polygon_node, units)?;
+        let cutout_nodes = self
+            .element_children(node)
+            .filter(|n| self.name(n) == "Cutout")
+            .collect::<Vec<_>>();
+        let cutouts = cutout_nodes
+            .into_iter()
+            .map(|n| self.parse_polygon_container(&n, units))
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(Contour { polygon, cutouts })
+    }
+
+    fn parse_polygon_container(&mut self, node: &Node, units: Units) -> Result<Polygon> {
+        match self
+            .element_children(node)
+            .find(|child| self.name(child) == "Polygon")
+        {
+            Some(polygon) => self.parse_polygon(&polygon, units),
+            None => self.parse_polygon(node, units),
         }
     }
 
@@ -784,14 +819,8 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            // Parse shape based on tag name
             let shape_type = match tag_name {
-                "Contour" => self
-                    .element_children(&child)
-                    .find(|n| self.name(n) == "Polygon")
-                    .map(|polygon| self.parse_polygon(&polygon, units))
-                    .transpose()?
-                    .map(UserShapeType::Polygon),
+                "Contour" => Some(UserShapeType::Contour(self.parse_contour(&child, units)?)),
                 "Circle" => Some(UserShapeType::Circle(Circle {
                     diameter: self
                         .parse_f64_attr_with_units(&child, "diameter", "Circle", units)?,
@@ -1284,9 +1313,11 @@ impl<'a> Parser<'a> {
         let mut copper_weight_oz = None;
         let mut color_term = None;
         let mut color_rgb = None;
+        let mut items = Vec::new();
 
         // Parse child elements for material and dielectric properties
         for child in self.element_children(node) {
+            items.push(self.parse_spec_item(&child));
             match self.name(&child) {
                 "General" if self.attr(&child, "type") == Some("MATERIAL") => {
                     // Look for Property, ColorTerm, and Color elements
@@ -1368,6 +1399,7 @@ impl<'a> Parser<'a> {
 
         Ok(ecad::Spec {
             name,
+            items,
             material,
             dielectric_constant,
             loss_tangent,
@@ -1377,6 +1409,46 @@ impl<'a> Parser<'a> {
             color_term,
             color_rgb,
         })
+    }
+
+    fn parse_spec_item(&mut self, node: &Node) -> ecad::SpecItem {
+        let element_name = self.name(node).to_string();
+        let element = self.interner.intern(&element_name);
+        let item_type = self.attr(node, "type").map(|s| self.interner.intern(s));
+        let comment = self.attr(node, "comment").map(|s| self.interner.intern(s));
+        let property_nodes = self
+            .element_children(node)
+            .filter(|child| self.name(child) == "Property")
+            .collect::<Vec<_>>();
+        let properties = property_nodes
+            .into_iter()
+            .map(|child| self.parse_spec_property(&child))
+            .collect();
+
+        ecad::SpecItem {
+            element,
+            kind: spec_item_kind(&element_name),
+            item_type,
+            comment,
+            properties,
+        }
+    }
+
+    fn parse_spec_property(&mut self, node: &Node) -> ecad::SpecProperty {
+        ecad::SpecProperty {
+            value: self
+                .attr(node, "value")
+                .and_then(|value| value.parse::<f64>().ok()),
+            text: self.attr(node, "text").map(|s| self.interner.intern(s)),
+            unit: self.attr(node, "unit").map(|s| self.interner.intern(s)),
+            plus_tol: self
+                .attr(node, "plusTol")
+                .and_then(|value| value.parse::<f64>().ok()),
+            minus_tol: self
+                .attr(node, "minusTol")
+                .and_then(|value| value.parse::<f64>().ok()),
+            tol_percent: self.attr(node, "tolPercent").and_then(parse_optional_bool),
+        }
     }
 
     fn parse_surface_finish(&mut self, node: &Node) -> Result<ecad::SurfaceFinish> {
@@ -1759,17 +1831,10 @@ impl<'a> Parser<'a> {
         let units = self.ecad_units.unwrap_or(Units::Millimeter);
         let polygon = self.parse_polygon(&polygon_node, units)?;
 
-        // Parse cutouts (voids within the board outline)
         let mut cutouts = Vec::new();
         for child in self.element_children(node) {
             if self.name(&child) == "Cutout" {
-                // Cutout contains a Polygon child
-                if let Some(cutout_polygon_node) = self
-                    .element_children(&child)
-                    .find(|n| self.name(n) == "Polygon")
-                {
-                    cutouts.push(self.parse_polygon(&cutout_polygon_node, units)?);
-                }
+                cutouts.push(self.parse_polygon_container(&child, units)?);
             }
         }
 
@@ -1791,25 +1856,90 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_component(&mut self, node: &Node) -> Result<Component> {
-        let ref_des = self.required_attr(node, "refDes", "Component")?;
-        let package_ref = self.required_attr(node, "packageRef", "Component")?;
+        let units = self.ecad_units.unwrap_or(Units::Millimeter);
+        let ref_des = self.optional_attr(node, "refDes");
+        let package_ref = self.optional_attr(node, "packageRef");
+        let mat_des = self.optional_attr(node, "matDes");
         let layer_ref = self.required_attr(node, "layerRef", "Component")?;
+        let layer_ref_topside = self.optional_attr(node, "layerRefTopside");
+        let mount_type = self.parse_mount_type(self.attr(node, "mountType").ok_or(
+            Ipc2581Error::MissingAttribute {
+                element: "Component",
+                attr: "mountType",
+            },
+        )?);
+        let part = self.required_attr(node, "part", "Component")?;
+        let model_ref = self.optional_attr(node, "modelRef");
+        let weight = self.parse_optional_f64_attr(node, "weight")?;
+        let height = self.parse_optional_f64_attr(node, "height")?;
+        let standoff = self.parse_optional_f64_attr(node, "standoff")?;
 
-        let mount_type = self.attr(node, "mountType").map(|s| match s {
-            "SMT" => MountType::Smt,
-            "THT" => MountType::Tht,
-            _ => MountType::Other,
-        });
+        let mut nonstandard_attributes = Vec::new();
+        let mut xform = None;
+        let mut location = None;
+        let mut slot_cavity_ref = None;
+        let mut spec_refs = Vec::new();
 
-        let part = self.attr(node, "part").map(|s| self.interner.intern(s));
+        for child in self.element_children(node) {
+            match self.name(&child) {
+                "NonstandardAttribute" => {
+                    nonstandard_attributes.push(self.parse_nonstandard_attribute(&child)?);
+                }
+                "Xform" => {
+                    xform = Some(self.parse_xform(&child, units));
+                }
+                "Location" => {
+                    location = Some(Location {
+                        x: self.parse_f64_attr_with_units(&child, "x", "Location", units)?,
+                        y: self.parse_f64_attr_with_units(&child, "y", "Location", units)?,
+                    });
+                }
+                "SlotCavityRef" => {
+                    slot_cavity_ref = self.optional_attr(&child, "id");
+                }
+                "SpecRef" => {
+                    if let Some(id) = self.attr(&child, "id") {
+                        spec_refs.push(self.interner.intern(id));
+                    }
+                }
+                _ => {}
+            }
+        }
 
         Ok(Component {
             ref_des,
             package_ref,
+            mat_des,
             layer_ref,
             mount_type,
             part,
+            layer_ref_topside,
+            model_ref,
+            weight,
+            height,
+            standoff,
+            location: location.ok_or(Ipc2581Error::MissingElement("Location"))?,
+            xform,
+            nonstandard_attributes,
+            slot_cavity_ref,
+            spec_refs,
         })
+    }
+
+    fn parse_mount_type(&self, value: &str) -> MountType {
+        match value {
+            "SMT" => MountType::Smt,
+            "THMT" | "THT" => MountType::Thmt,
+            "EMBEDDED" => MountType::Embedded,
+            "PRESSFIT" => MountType::PressFit,
+            "WIRE_BONDED" => MountType::WireBonded,
+            "GLUED" => MountType::Glued,
+            "CLAMPED" => MountType::Clamped,
+            "SOCKETED" => MountType::Socketed,
+            "FORMED" => MountType::Formed,
+            "OTHER" => MountType::Other,
+            _ => MountType::Other,
+        }
     }
 
     fn parse_logical_net(&mut self, node: &Node) -> Result<LogicalNet> {
@@ -1828,9 +1958,16 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_pin_ref(&mut self, node: &Node) -> Result<PinRef> {
-        let component_ref = self.required_attr(node, "componentRef", "PinRef")?;
+        let component_ref = self
+            .attr(node, "componentRef")
+            .map(|s| self.interner.intern(s));
         let pin = self.required_attr(node, "pin", "PinRef")?;
-        Ok(PinRef { component_ref, pin })
+        let title = self.attr(node, "title").map(|s| self.interner.intern(s));
+        Ok(PinRef {
+            component_ref,
+            pin,
+            title,
+        })
     }
 
     fn parse_phy_net_group(&mut self, node: &Node) -> Result<PhyNetGroup> {
@@ -1855,8 +1992,14 @@ impl<'a> Parser<'a> {
 
         let mut span = None;
         let mut profile = None;
+        let mut spec_refs = Vec::new();
         for child in self.element_children(node) {
             match self.name(&child) {
+                "SpecRef" => {
+                    if let Some(id) = self.attr(&child, "id") {
+                        spec_refs.push(self.interner.intern(id));
+                    }
+                }
                 "Span" => {
                     span = Some(ecad::LayerSpan {
                         from_layer: self
@@ -1880,6 +2023,7 @@ impl<'a> Parser<'a> {
             side,
             polarity,
             span,
+            spec_refs,
             profile,
         })
     }
@@ -1910,51 +2054,39 @@ impl<'a> Parser<'a> {
             _ => None,
         });
 
-        let mut holes = Vec::new();
-        let mut slots = Vec::new();
-        let mut pads = Vec::new();
-        let mut traces = Vec::new();
-        let mut polygons = Vec::new();
-        let mut lines = Vec::new();
-        let mut polylines = Vec::new();
         let mut features = Vec::new();
+        let mut spec_refs = Vec::new();
         let mut nonstandard_attributes = Vec::new();
 
         for child in self.element_children(node) {
             match self.name(&child) {
+                "SpecRef" => {
+                    if let Some(id) = self.attr(&child, "id") {
+                        spec_refs.push(self.interner.intern(id));
+                    }
+                }
                 "Hole" => {
                     let hole = self.parse_hole(&child)?;
-                    features.push(ecad::SetFeature::Hole(hole.clone()));
-                    holes.push(hole);
+                    features.push(ecad::SetFeature::Hole(hole));
                 }
                 "SlotCavity" => {
                     let slot = self.parse_slot_cavity(&child)?;
-                    features.push(ecad::SetFeature::Slot(slot.clone()));
-                    slots.push(slot);
+                    features.push(ecad::SetFeature::Slot(slot));
                 }
                 "Pad" => {
                     let pad = self.parse_pad(&child)?;
-                    features.push(ecad::SetFeature::Pad(pad.clone()));
-                    pads.push(pad);
+                    features.push(ecad::SetFeature::Pad(pad));
+                }
+                "BadBoardMark" | "GlobalFiducial" | "GoodPanelMark" | "LocalFiducial" => {
+                    let fiducial = self.parse_fiducial(&child)?;
+                    features.push(ecad::SetFeature::Fiducial(fiducial));
                 }
                 "Polyline" => {
                     let trace = self.parse_trace(&child)?;
-                    features.push(ecad::SetFeature::Trace(trace.clone()));
-                    traces.push(trace);
+                    features.push(ecad::SetFeature::Trace(trace));
                 }
                 "Features" => {
-                    for feature in self.parse_features(&child) {
-                        match &feature {
-                            ecad::SetFeature::Polygon(polygon) => polygons.push(polygon.clone()),
-                            ecad::SetFeature::Line(line) => lines.push(line.clone()),
-                            ecad::SetFeature::Polyline(polyline) => {
-                                polylines.push(polyline.clone())
-                            }
-                            ecad::SetFeature::Arc(_)
-                            | ecad::SetFeature::StandardPrimitiveRef(_)
-                            | ecad::SetFeature::UserPrimitiveRef(_) => {}
-                            _ => {}
-                        }
+                    for feature in self.parse_features(&child)? {
                         features.push(feature);
                     }
                 }
@@ -1971,14 +2103,8 @@ impl<'a> Parser<'a> {
             net,
             geometry,
             polarity,
+            spec_refs,
             features,
-            holes,
-            slots,
-            pads,
-            traces,
-            polygons,
-            lines,
-            polylines,
             nonstandard_attributes,
         })
     }
@@ -1995,7 +2121,60 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_features(&mut self, features_node: &Node) -> Vec<ecad::SetFeature> {
+    fn parse_fiducial(&mut self, node: &Node) -> Result<ecad::Fiducial> {
+        let units = self.ecad_units.unwrap_or(Units::Millimeter);
+        let kind = match self.name(node) {
+            "BadBoardMark" => ecad::FiducialKind::BadBoardMark,
+            "GlobalFiducial" => ecad::FiducialKind::Global,
+            "GoodPanelMark" => ecad::FiducialKind::GoodPanelMark,
+            "LocalFiducial" => ecad::FiducialKind::Local,
+            name => {
+                return Err(Ipc2581Error::InvalidStructure(format!(
+                    "Unknown fiducial element: {name}"
+                )));
+            }
+        };
+
+        let mut location = None;
+        let xform = self.parse_xform_child(node, units);
+        let mut shape = None;
+        let mut pin_ref = None;
+
+        for child in self.element_children(node) {
+            match self.name(&child) {
+                "Location" => {
+                    location = Some(Location {
+                        x: self.parse_f64_attr_with_units(&child, "x", "Location", units)?,
+                        y: self.parse_f64_attr_with_units(&child, "y", "Location", units)?,
+                    });
+                }
+                "PinRef" => pin_ref = Some(self.parse_pin_ref(&child)?),
+                "StandardPrimitiveRef" => {
+                    if let Some(id) = self.attr(&child, "id") {
+                        shape = Some(ecad::FiducialShape::StandardPrimitiveRef(
+                            self.interner.intern(id),
+                        ));
+                    }
+                }
+                name if is_standard_primitive_name(name) => {
+                    shape = Some(ecad::FiducialShape::Primitive(
+                        self.parse_standard_primitive(&child, units)?,
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        Ok(ecad::Fiducial {
+            kind,
+            location: location.ok_or(Ipc2581Error::MissingElement("Location"))?,
+            xform,
+            shape: shape.ok_or(Ipc2581Error::MissingElement("StandardShape"))?,
+            pin_ref,
+        })
+    }
+
+    fn parse_features(&mut self, features_node: &Node) -> Result<Vec<ecad::SetFeature>> {
         let mut features = Vec::new();
         let units = self.ecad_units.unwrap_or(Units::Millimeter);
         let offset = self.parse_features_location(features_node, units);
@@ -2025,52 +2204,14 @@ impl<'a> Parser<'a> {
                     }
                 }
                 "UserSpecial" => {
-                    // UserSpecial contains Contour > Polygon, Line, or Polyline.
-                    for inner in self.element_children(&child) {
-                        match self.name(&inner) {
-                            "Contour" => {
-                                for poly_node in self.element_children(&inner) {
-                                    if self.name(&poly_node) == "Polygon"
-                                        && let Some(feature) =
-                                            self.parse_feature_polygon(&poly_node, units, offset)
-                                    {
-                                        features.push(feature);
-                                    }
-                                }
-                            }
-                            "Line" => {
-                                if let Ok(line) = self.parse_line(&inner, units, offset.x, offset.y)
-                                {
-                                    features.push(ecad::SetFeature::Line(line));
-                                }
-                            }
-                            "Arc" => {
-                                if let Ok(arc) =
-                                    self.parse_feature_arc(&inner, units, offset.x, offset.y)
-                                {
-                                    features.push(ecad::SetFeature::Arc(arc));
-                                }
-                            }
-                            "Polyline" => {
-                                if let Ok(polyline) =
-                                    self.parse_feature_polyline(&inner, units, offset.x, offset.y)
-                                {
-                                    features.push(ecad::SetFeature::Polyline(polyline));
-                                }
-                            }
-                            "UserPrimitiveRef" => {
-                                if let Some(id) = self.attr(&inner, "id") {
-                                    features.push(ecad::SetFeature::UserPrimitiveRef(
-                                        ecad::FeaturePrimitiveRef {
-                                            id: self.interner.intern(id),
-                                            x: offset.x,
-                                            y: offset.y,
-                                        },
-                                    ));
-                                }
-                            }
-                            _ => {}
-                        }
+                    if let Ok(primitive) = self.parse_user_special(&child, units) {
+                        features.push(ecad::SetFeature::UserPrimitive(
+                            ecad::FeatureUserPrimitive {
+                                primitive,
+                                x: offset.x,
+                                y: offset.y,
+                            },
+                        ));
                     }
                 }
                 "StandardPrimitiveRef" => {
@@ -2099,7 +2240,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        features
+        Ok(features)
     }
 
     fn parse_features_location(&self, features_node: &Node, units: Units) -> Point {
@@ -2166,22 +2307,14 @@ impl<'a> Parser<'a> {
 
         let mut line_width = 0.25;
         let mut line_end = None;
+        let mut line_property = None;
         let mut line_desc_ref = None;
 
         for child in self.element_children(node) {
             match self.name(&child) {
                 "LineDesc" => {
-                    line_width = self
-                        .attr(&child, "lineWidth")
-                        .and_then(|s| s.parse::<f64>().ok())
-                        .map(|v| crate::units::to_mm(v, units))
-                        .unwrap_or(0.25);
-                    line_end = self.attr(&child, "lineEnd").and_then(|s| match s {
-                        "ROUND" => Some(LineEnd::Round),
-                        "SQUARE" => Some(LineEnd::Square),
-                        "FLAT" => Some(LineEnd::Flat),
-                        _ => None,
-                    });
+                    (line_width, line_end, line_property) =
+                        self.parse_feature_line_desc(&child, units)?;
                 }
                 "LineDescRef" => {
                     if let Some(id) = self.attr(&child, "id") {
@@ -2200,6 +2333,7 @@ impl<'a> Parser<'a> {
             line_desc_ref,
             line_width,
             line_end,
+            line_property,
         })
     }
 
@@ -2213,22 +2347,14 @@ impl<'a> Parser<'a> {
         let arc = self.parse_user_arc(node, units)?;
         let mut line_width = 0.25;
         let mut line_end = None;
+        let mut line_property = None;
         let mut line_desc_ref = None;
 
         for child in self.element_children(node) {
             match self.name(&child) {
                 "LineDesc" => {
-                    line_width = self
-                        .attr(&child, "lineWidth")
-                        .and_then(|s| s.parse::<f64>().ok())
-                        .map(|v| crate::units::to_mm(v, units))
-                        .unwrap_or(0.25);
-                    line_end = self.attr(&child, "lineEnd").and_then(|s| match s {
-                        "ROUND" => Some(LineEnd::Round),
-                        "SQUARE" => Some(LineEnd::Square),
-                        "FLAT" => Some(LineEnd::Flat),
-                        _ => None,
-                    });
+                    (line_width, line_end, line_property) =
+                        self.parse_feature_line_desc(&child, units)?;
                 }
                 "LineDescRef" => {
                     if let Some(id) = self.attr(&child, "id") {
@@ -2256,6 +2382,7 @@ impl<'a> Parser<'a> {
             line_desc_ref,
             line_width,
             line_end,
+            line_property,
         })
     }
 
@@ -2270,6 +2397,7 @@ impl<'a> Parser<'a> {
         let mut steps = Vec::new();
         let mut line_width = 0.25;
         let mut line_end = None;
+        let mut line_property = None;
         let mut line_desc_ref = None;
 
         for child in self.element_children(node) {
@@ -2334,17 +2462,8 @@ impl<'a> Parser<'a> {
                     }));
                 }
                 "LineDesc" => {
-                    line_width = self
-                        .attr(&child, "lineWidth")
-                        .and_then(|s| s.parse::<f64>().ok())
-                        .map(|v| crate::units::to_mm(v, units))
-                        .unwrap_or(0.25);
-                    line_end = self.attr(&child, "lineEnd").and_then(|s| match s {
-                        "ROUND" => Some(LineEnd::Round),
-                        "SQUARE" => Some(LineEnd::Square),
-                        "FLAT" => Some(LineEnd::Flat),
-                        _ => None,
-                    });
+                    (line_width, line_end, line_property) =
+                        self.parse_feature_line_desc(&child, units)?;
                 }
                 "LineDescRef" => {
                     if let Some(id) = self.attr(&child, "id") {
@@ -2361,6 +2480,7 @@ impl<'a> Parser<'a> {
             line_desc_ref,
             line_width,
             line_end,
+            line_property,
         })
     }
 
@@ -2451,6 +2571,8 @@ impl<'a> Parser<'a> {
             SlotShape::Primitive(self.parse_standard_primitive(&primitive_node, units)?)
         };
 
+        let xform = self.parse_xform_child(node, units);
+
         let z_axis_dim = has_z_axis_dim(self.doc(), node);
 
         Ok(Slot {
@@ -2458,6 +2580,7 @@ impl<'a> Parser<'a> {
             shape,
             plating_status,
             z_axis_dim,
+            xform,
             x,
             y,
         })
@@ -2496,14 +2619,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // Parse Xform child element if present
-        let mut xform = None;
-        for child in self.element_children(node) {
-            if self.name(&child) == "Xform" {
-                xform = Some(self.parse_xform(&child));
-                break;
-            }
-        }
+        let xform = self.parse_xform_child(node, units);
 
         // Parse inline StandardPrimitiveRef if present
         let standard_primitive_ref = self
@@ -2519,6 +2635,14 @@ impl<'a> Parser<'a> {
             .and_then(|n| self.attr(&n, "id"))
             .map(|id| self.interner.intern(id));
 
+        let mut pin_ref = None;
+        for child in self.element_children(node) {
+            if self.name(&child) == "PinRef" {
+                pin_ref = Some(self.parse_pin_ref(&child)?);
+                break;
+            }
+        }
+
         Ok(Pad {
             padstack_def_ref,
             x,
@@ -2526,6 +2650,7 @@ impl<'a> Parser<'a> {
             xform,
             standard_primitive_ref,
             user_primitive_ref,
+            pin_ref,
         })
     }
 
@@ -3041,14 +3166,16 @@ impl<'a> Parser<'a> {
         Ok(AvlVendor { enterprise_ref })
     }
 
-    fn parse_xform(&self, node: &Node) -> Xform {
+    fn parse_xform(&self, node: &Node, units: Units) -> Xform {
         let x_offset = self
             .attr(node, "xOffset")
-            .and_then(|s| s.parse().ok())
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|value| crate::units::to_mm(value, units))
             .unwrap_or(0.0);
         let y_offset = self
             .attr(node, "yOffset")
-            .and_then(|s| s.parse().ok())
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|value| crate::units::to_mm(value, units))
             .unwrap_or(0.0);
         let rotation = self
             .attr(node, "rotation")
@@ -3056,6 +3183,10 @@ impl<'a> Parser<'a> {
             .unwrap_or(0.0);
         let mirror = self
             .attr(node, "mirror")
+            .map(|s| s == "true")
+            .unwrap_or(false);
+        let face_up = self
+            .attr(node, "faceUp")
             .map(|s| s == "true")
             .unwrap_or(false);
         let scale = self
@@ -3068,8 +3199,15 @@ impl<'a> Parser<'a> {
             y_offset,
             rotation,
             mirror,
+            face_up,
             scale,
         }
+    }
+
+    fn parse_xform_child(&self, node: &Node, units: Units) -> Option<Xform> {
+        self.element_children(node)
+            .find(|n| self.name(n) == "Xform")
+            .map(|n| self.parse_xform(&n, units))
     }
 }
 
@@ -3089,6 +3227,47 @@ fn has_z_axis_dim(doc: &Document, node: &Node) -> bool {
                             matches!(grandchild_name, "MaterialCut" | "MaterialLeft")
                         }))
         })
+}
+
+fn parse_optional_bool(value: &str) -> Option<bool> {
+    match value {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn spec_item_kind(element: &str) -> ecad::SpecItemKind {
+    match element {
+        "General" => ecad::SpecItemKind::General,
+        "Dielectric" => ecad::SpecItemKind::Dielectric,
+        "Conductor" => ecad::SpecItemKind::Conductor,
+        "SurfaceFinish" => ecad::SpecItemKind::SurfaceFinish,
+        "V_Cut" => ecad::SpecItemKind::VCut,
+        _ => ecad::SpecItemKind::Other,
+    }
+}
+
+fn is_standard_primitive_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Butterfly"
+            | "Circle"
+            | "Contour"
+            | "Diamond"
+            | "Donut"
+            | "Ellipse"
+            | "Hexagon"
+            | "Moire"
+            | "Octagon"
+            | "Oval"
+            | "RectCenter"
+            | "RectCham"
+            | "RectCorner"
+            | "RectRound"
+            | "Thermal"
+            | "Triangle"
+    )
 }
 
 #[cfg(test)]
@@ -3115,6 +3294,61 @@ mod tests {
         let root = doc.document_element().unwrap();
 
         assert!(has_z_axis_dim(&doc, &root));
+    }
+
+    #[test]
+    fn parses_slot_cavity_xform() {
+        let ipc = crate::Ipc2581::parse(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<IPC-2581 revision="C" xmlns="http://webstds.ipc.org/2581">
+  <Content roleRef="owner">
+    <FunctionMode mode="FABRICATION"/>
+    <StepRef name="board"/>
+    <LayerRef name="F.Cu_B.Cu_1"/>
+  </Content>
+  <Ecad>
+    <CadHeader units="MILLIMETER"/>
+    <CadData>
+      <Layer name="F.Cu_B.Cu_1" layerFunction="ROUT" side="ALL"/>
+      <Step name="board" type="BOARD">
+        <LayerFeature layerRef="F.Cu_B.Cu_1">
+          <Set>
+            <SlotCavity name="SLOT1" platingStatus="PLATED" plusTol="0" minusTol="0">
+              <Location x="1" y="2"/>
+              <Xform rotation="90" mirror="true" scale="2" xOffset="0.5" yOffset="0.25"/>
+              <Oval width="1.7" height="0.6"/>
+            </SlotCavity>
+          </Set>
+        </LayerFeature>
+      </Step>
+    </CadData>
+  </Ecad>
+</IPC-2581>"#,
+        )
+        .unwrap();
+        let slot = ipc
+            .ecad()
+            .unwrap()
+            .cad_data
+            .steps
+            .first()
+            .unwrap()
+            .layer_features
+            .first()
+            .unwrap()
+            .sets
+            .first()
+            .unwrap()
+            .slots()
+            .next()
+            .unwrap();
+
+        let xform = slot.xform.unwrap();
+        assert_eq!(xform.rotation, 90.0);
+        assert!(xform.mirror);
+        assert_eq!(xform.scale, 2.0);
+        assert_eq!(xform.x_offset, 0.5);
+        assert_eq!(xform.y_offset, 0.25);
     }
 }
 

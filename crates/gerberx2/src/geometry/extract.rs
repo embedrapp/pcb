@@ -1,14 +1,65 @@
+//! Lower parsed Gerber into a pcb-ir artwork document.
+//!
+//! Standard-aperture flashes are preserved as native `Flash` objects with an
+//! aperture table so round trips keep pad identity; macro/block flashes and
+//! shaped draws are flattened to filled regions.
+
 use std::collections::HashMap;
 
 use crate::GerberX2;
 use crate::types as gerber;
-use pcb_ir::common::*;
-use pcb_ir::dialects::gerber::*;
+use pcb_ir::dialects::artwork::{self, Aperture, ApertureShape, Document, Geometry, Layer, Object};
+use pcb_ir::geom::path::{ContourBuf, PathCmd, transform_cmds};
+use pcb_ir::geom::region::{self, PaintComposer};
+use pcb_ir::geom::{Affine2, Arc, BBox, FillRule, Paint, Point, Polarity, Span, StrokeStyle};
 
 const SWEEP_SAMPLE_MM: f64 = 0.025;
 
-pub fn extract_document(gerber: &GerberX2) -> GeometryDocument<gerber::Attribute> {
-    let mut doc = GeometryDocument::<gerber::Attribute>::new(file_function(gerber));
+pub type GerberArtworkDocument = Document<Vec<String>, GerberObjectMeta>;
+
+/// Which Gerber operation produced an object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    Flash,
+    Draw,
+    Arc,
+    Region,
+}
+
+/// Coarse fabrication classification of a Gerber object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectClass {
+    Pad,
+    Trace,
+    Fill,
+    Cutout,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GerberObjectMeta {
+    pub kind: SourceKind,
+    pub class: ObjectClass,
+    pub polarity: Polarity,
+    pub aperture: Option<i32>,
+    pub object_index: u32,
+    pub aperture_attributes: Vec<gerber::Attribute>,
+    pub object_attributes: Vec<gerber::Attribute>,
+    pub mirroring: gerber::Mirroring,
+    pub rotation_degrees: f64,
+    pub scaling: f64,
+}
+
+pub fn extract_document(gerber: &GerberX2) -> GerberArtworkDocument {
+    let file_function = file_function(gerber);
+    let mut doc = Document::new();
+    let layer = doc.push_layer(Layer {
+        name: file_function.join(", "),
+        role: super::layer_role(&file_function),
+        side: super::layer_side(&file_function),
+        objects: Span::EMPTY,
+        bbox: BBox::empty(),
+        meta: file_function,
+    });
     let apertures = gerber
         .aperture_definitions()
         .iter()
@@ -22,42 +73,50 @@ pub fn extract_document(gerber: &GerberX2) -> GeometryDocument<gerber::Attribute
                     doc.warn(format!("flash references undefined aperture D{aperture}"));
                     continue;
                 };
-                let Some(geometry) = &definition.geometry else {
+                let transform = object_transform(object, point(*at));
+                let mut meta = meta_from_object(object, object_index, SourceKind::Flash);
+                meta.aperture = Some(*aperture);
+
+                if let Some(standard) = standard_aperture(&definition.template) {
+                    let aperture_id = doc.push_aperture(standard);
+                    doc.push_object(
+                        layer,
+                        Object {
+                            polarity: meta.polarity,
+                            order: Default::default(),
+                            geometry: Geometry::Flash {
+                                aperture: aperture_id,
+                                transform,
+                            },
+                            bbox: BBox::empty(),
+                            meta,
+                        },
+                    );
+                } else if let Some(geometry) = &definition.geometry {
+                    push_flattened_paths(
+                        &mut doc,
+                        layer,
+                        meta,
+                        aperture_paths(geometry, transform),
+                    );
+                } else {
                     doc.warn(format!(
                         "flash aperture D{aperture} has no lowered geometry"
                     ));
-                    continue;
-                };
-                let transform = Affine2::placement(
-                    point(*at),
-                    object.rotation_degrees,
-                    object.mirroring,
-                    object.scaling,
-                );
-                let mut feature = feature_from_object(
-                    object,
-                    object_index,
-                    FeatureKind::Flash,
-                    classify_bucket(object, FeatureKind::Flash),
-                );
-                feature.aperture = Some(*aperture);
-                doc.push_feature(feature, aperture_paths(geometry, transform));
+                }
             }
             gerber::ObjectKind::Draw {
                 start,
                 end,
                 aperture,
             } => {
-                let mut feature = feature_from_object(
-                    object,
-                    object_index,
-                    FeatureKind::Draw,
-                    classify_bucket(object, FeatureKind::Draw),
-                );
-                feature.aperture = Some(*aperture);
+                let mut meta = meta_from_object(object, object_index, SourceKind::Draw);
+                meta.aperture = Some(*aperture);
                 if let Some(width) = circular_aperture_diameter(&apertures, *aperture) {
-                    doc.push_feature(
-                        feature,
+                    push_flattened_paths(
+                        &mut doc,
+                        layer,
+                        meta,
                         vec![line_path(
                             point(*start),
                             point(*end),
@@ -65,8 +124,10 @@ pub fn extract_document(gerber: &GerberX2) -> GeometryDocument<gerber::Attribute
                         )],
                     );
                 } else if let Some(geometry) = aperture_geometry(&apertures, *aperture) {
-                    doc.push_feature(
-                        feature,
+                    push_flattened_paths(
+                        &mut doc,
+                        layer,
+                        meta,
                         sampled_line_sweep(point(*start), point(*end), object, geometry),
                     );
                 } else {
@@ -80,18 +141,15 @@ pub fn extract_document(gerber: &GerberX2) -> GeometryDocument<gerber::Attribute
                 clockwise,
                 aperture,
             } => {
-                let mut feature = feature_from_object(
-                    object,
-                    object_index,
-                    FeatureKind::Arc,
-                    classify_bucket(object, FeatureKind::Arc),
-                );
-                feature.aperture = Some(*aperture);
+                let mut meta = meta_from_object(object, object_index, SourceKind::Arc);
+                meta.aperture = Some(*aperture);
                 let start = point(*start);
                 let center = Point::new(start.x + center_offset.x, start.y + center_offset.y);
                 if let Some(width) = circular_aperture_diameter(&apertures, *aperture) {
-                    doc.push_feature(
-                        feature,
+                    push_flattened_paths(
+                        &mut doc,
+                        layer,
+                        meta,
                         vec![arc_path(
                             start,
                             point(*end),
@@ -101,8 +159,10 @@ pub fn extract_document(gerber: &GerberX2) -> GeometryDocument<gerber::Attribute
                         )],
                     );
                 } else if let Some(geometry) = aperture_geometry(&apertures, *aperture) {
-                    doc.push_feature(
-                        feature,
+                    push_flattened_paths(
+                        &mut doc,
+                        layer,
+                        meta,
                         sampled_arc_sweep(start, point(*end), center, *clockwise, object, geometry),
                     );
                 } else {
@@ -110,19 +170,60 @@ pub fn extract_document(gerber: &GerberX2) -> GeometryDocument<gerber::Attribute
                 }
             }
             gerber::ObjectKind::Region { contours } => {
-                let feature = feature_from_object(
-                    object,
-                    object_index,
-                    FeatureKind::Region,
-                    classify_bucket(object, FeatureKind::Region),
-                );
-                doc.push_feature(feature, vec![region_path(contours)]);
+                let meta = meta_from_object(object, object_index, SourceKind::Region);
+                push_flattened_paths(&mut doc, layer, meta, region_paths(contours));
             }
         }
     }
 
-    pcb_ir::dialects::gerber::process::normalize_bounds(&mut doc);
+    artwork::normalize_bounds(&mut doc);
     doc
+}
+
+/// Convert a standard aperture template into an artwork aperture. Macro and
+/// block templates return `None` and are flattened instead.
+fn standard_aperture(template: &gerber::ApertureTemplate) -> Option<Aperture> {
+    let (shape, hole_diameter) = match *template {
+        gerber::ApertureTemplate::Circle {
+            diameter,
+            hole_diameter,
+        } => (ApertureShape::Circle { diameter }, hole_diameter),
+        gerber::ApertureTemplate::Rectangle {
+            width,
+            height,
+            hole_diameter,
+        } => (ApertureShape::Rectangle { width, height }, hole_diameter),
+        gerber::ApertureTemplate::Obround {
+            width,
+            height,
+            hole_diameter,
+        } => (ApertureShape::Obround { width, height }, hole_diameter),
+        gerber::ApertureTemplate::Polygon {
+            outer_diameter,
+            vertices,
+            rotation_degrees,
+            hole_diameter,
+        } => {
+            if vertices < 3 {
+                return None;
+            }
+            (
+                ApertureShape::Polygon {
+                    diameter: outer_diameter,
+                    vertices: vertices as u32,
+                    rotation_degrees: rotation_degrees.unwrap_or(0.0),
+                },
+                hole_diameter,
+            )
+        }
+        gerber::ApertureTemplate::Macro { .. } | gerber::ApertureTemplate::Block { .. } => {
+            return None;
+        }
+    };
+    Some(Aperture {
+        shape,
+        hole_diameter: hole_diameter.unwrap_or(0.0),
+    })
 }
 
 fn aperture_geometry<'a>(
@@ -146,31 +247,33 @@ fn file_function(gerber: &GerberX2) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn feature_from_object(
+fn meta_from_object(
     object: &gerber::GraphicalObject,
     object_index: usize,
-    kind: FeatureKind,
-    bucket: FeatureBucket,
-) -> GeometryFeature<gerber::Attribute> {
-    let mut feature = GeometryFeature::new(kind, bucket, object.polarity);
-    feature.object_index = object_index as u32;
-    feature.aperture_attributes = object.aperture_attributes.clone();
-    feature.object_attributes = object.object_attributes.clone();
-    feature.mirroring = object.mirroring;
-    feature.rotation_degrees = object.rotation_degrees;
-    feature.scaling = object.scaling;
-    feature
+    kind: SourceKind,
+) -> GerberObjectMeta {
+    GerberObjectMeta {
+        kind,
+        class: classify(object, kind),
+        polarity: object.polarity,
+        aperture: None,
+        object_index: object_index as u32,
+        aperture_attributes: object.aperture_attributes.clone(),
+        object_attributes: object.object_attributes.clone(),
+        mirroring: object.mirroring,
+        rotation_degrees: object.rotation_degrees,
+        scaling: object.scaling,
+    }
 }
 
-fn classify_bucket(object: &gerber::GraphicalObject, kind: FeatureKind) -> FeatureBucket {
+fn classify(object: &gerber::GraphicalObject, kind: SourceKind) -> ObjectClass {
     if object.polarity == Polarity::Clear {
-        return FeatureBucket::Cutout;
+        return ObjectClass::Cutout;
     }
     match kind {
-        FeatureKind::Region => FeatureBucket::Fill,
-        FeatureKind::Draw | FeatureKind::Arc => FeatureBucket::Trace,
-        FeatureKind::Flash => FeatureBucket::Pad,
-        FeatureKind::Composite => FeatureBucket::Unknown,
+        SourceKind::Region => ObjectClass::Fill,
+        SourceKind::Draw | SourceKind::Arc => ObjectClass::Trace,
+        SourceKind::Flash => ObjectClass::Pad,
     }
 }
 
@@ -179,80 +282,142 @@ fn circular_aperture_diameter(
     code: i32,
 ) -> Option<f64> {
     match apertures.get(&code)?.template {
-        gerber::ApertureTemplate::Circle { diameter, .. } => Some(diameter),
+        gerber::ApertureTemplate::Circle {
+            diameter,
+            hole_diameter: _,
+        } => Some(diameter),
         _ => None,
     }
 }
 
-fn aperture_paths(geometry: &gerber::ApertureGeometry, transform: Affine2) -> Vec<PathPayload> {
+/// One flattened piece of an object: per-piece polarity (macro geometry can
+/// carry clear parts) plus its paint and contours.
+#[derive(Debug, Clone)]
+struct ExtractedPath {
+    polarity: Polarity,
+    paint: Paint,
+    contours: Vec<ContourBuf>,
+}
+
+fn push_flattened_paths(
+    doc: &mut GerberArtworkDocument,
+    layer: u32,
+    meta: GerberObjectMeta,
+    paths: Vec<ExtractedPath>,
+) {
+    if paths.is_empty() {
+        return;
+    }
+
+    if paths.len() == 1 && paths[0].polarity == Polarity::Dark {
+        let extracted = paths.into_iter().next().unwrap();
+        let is_stroked = matches!(extracted.paint, Paint::Stroke(_));
+        let path = doc.push_path(extracted.paint, extracted.contours);
+        doc.push_object(
+            layer,
+            Object {
+                polarity: meta.polarity,
+                order: Default::default(),
+                geometry: if is_stroked {
+                    Geometry::Stroke { path }
+                } else {
+                    Geometry::Region { path }
+                },
+                bbox: doc.path_bbox(path),
+                meta,
+            },
+        );
+        return;
+    }
+
+    let mut composer = PaintComposer::default();
+    for extracted in paths {
+        let rings = region::simplify_rings(
+            region::rings_from_contours(&extracted.contours),
+            extracted.paint.fill_rule().unwrap_or(FillRule::NonZero),
+        );
+        if rings.is_empty() {
+            continue;
+        }
+        composer.push(extracted.polarity, rings);
+    }
+    let contours = region::rings_to_contours(composer.finish());
+    if contours.is_empty() {
+        return;
+    }
+
+    let path = doc.push_path(
+        Paint::Fill {
+            rule: FillRule::NonZero,
+        },
+        contours,
+    );
+    doc.push_object(
+        layer,
+        Object {
+            polarity: meta.polarity,
+            order: Default::default(),
+            geometry: Geometry::Region { path },
+            bbox: doc.path_bbox(path),
+            meta,
+        },
+    );
+}
+
+fn aperture_paths(geometry: &gerber::ApertureGeometry, transform: Affine2) -> Vec<ExtractedPath> {
     geometry
         .paths
         .iter()
-        .map(|path| {
-            let contours = path
+        .map(|path| ExtractedPath {
+            polarity: path.polarity,
+            paint: Paint::Fill {
+                rule: FillRule::NonZero,
+            },
+            contours: path
                 .contours
                 .iter()
                 .map(|contour| transform_contour(&contour.commands, transform))
-                .collect();
-            PathPayload {
-                path: GeometryPath::filled_with_polarity(FillRule::NonZero, path.polarity),
-                contours,
-            }
+                .collect(),
         })
         .collect()
 }
 
-fn transform_contour(commands: &[gerber::PathCommand], transform: Affine2) -> ContourPayload {
-    let mut bbox = BBox::empty();
-    let mut cmds = Vec::new();
-    let flips_orientation = transform.determinant() < 0.0;
-    for command in commands {
-        let cmd = match *command {
-            gerber::PathCommand::MoveTo(p) => PathCmd::move_to(transform.transform_point(point(p))),
-            gerber::PathCommand::LineTo(p) => PathCmd::line_to(transform.transform_point(point(p))),
+fn transform_contour(commands: &[gerber::PathCommand], transform: Affine2) -> ContourBuf {
+    let cmds = commands
+        .iter()
+        .map(|command| match *command {
+            gerber::PathCommand::MoveTo(p) => PathCmd::move_to(point(p)),
+            gerber::PathCommand::LineTo(p) => PathCmd::line_to(point(p)),
             gerber::PathCommand::ArcTo {
                 end,
                 center,
                 clockwise,
-            } => PathCmd::arc_to(
-                transform.transform_point(point(end)),
-                transform.transform_point(point(center)),
-                clockwise ^ flips_orientation,
-            ),
+            } => PathCmd::arc_to(point(end), point(center), clockwise),
             gerber::PathCommand::Close => PathCmd::close(),
-        };
-        include_cmd_bbox(&mut bbox, cmds.last().copied(), cmd);
-        cmds.push(cmd);
-    }
-    ContourPayload { bbox, cmds }
+        })
+        .collect::<Vec<_>>();
+    transform_cmds(cmds, transform)
 }
 
-fn line_path(start: Point, end: Point, width: f64) -> PathPayload {
-    let bbox = BBox::from_point(start)
-        .union(BBox::from_point(end))
-        .expand(width / 2.0);
-    PathPayload {
-        path: GeometryPath::stroked(width, LineCap::Round),
-        contours: vec![ContourPayload {
-            bbox,
-            cmds: vec![PathCmd::move_to(start), PathCmd::line_to(end)],
-        }],
+fn line_path(start: Point, end: Point, width: f64) -> ExtractedPath {
+    ExtractedPath {
+        polarity: Polarity::Dark,
+        paint: Paint::Stroke(StrokeStyle::round(width)),
+        contours: vec![ContourBuf::new(vec![
+            PathCmd::move_to(start),
+            PathCmd::line_to(end),
+        ])],
     }
 }
 
-fn arc_path(start: Point, end: Point, center: Point, clockwise: bool, width: f64) -> PathPayload {
-    let mut bbox = BBox::empty();
-    bbox.include_circular_arc(start, end, center, clockwise);
-    bbox = bbox.expand(width / 2.0);
-    PathPayload {
-        path: GeometryPath::stroked(width, LineCap::Round),
-        contours: vec![ContourPayload {
-            bbox,
-            cmds: vec![
-                PathCmd::move_to(start),
-                PathCmd::arc_to(end, center, clockwise),
-            ],
-        }],
+fn arc_path(start: Point, end: Point, center: Point, clockwise: bool, width: f64) -> ExtractedPath {
+    ExtractedPath {
+        polarity: Polarity::Dark,
+        paint: Paint::Stroke(StrokeStyle::round(width)),
+        contours: vec![ContourBuf::new(vec![
+            PathCmd::move_to(start),
+            PathCmd::arc_to(end, center, clockwise),
+        ])],
     }
 }
 
@@ -261,16 +426,13 @@ fn sampled_line_sweep(
     end: Point,
     object: &gerber::GraphicalObject,
     geometry: &gerber::ApertureGeometry,
-) -> Vec<PathPayload> {
+) -> Vec<ExtractedPath> {
     let length = start.distance_to(end);
     let steps = sample_steps(length);
     (0..=steps)
         .flat_map(|index| {
             let t = index as f64 / steps.max(1) as f64;
-            let at = Point::new(
-                start.x + (end.x - start.x) * t,
-                start.y + (end.y - start.y) * t,
-            );
+            let at = start + (end - start) * t;
             aperture_paths(geometry, object_transform(object, at))
         })
         .collect()
@@ -283,20 +445,17 @@ fn sampled_arc_sweep(
     clockwise: bool,
     object: &gerber::GraphicalObject,
     geometry: &gerber::ApertureGeometry,
-) -> Vec<PathPayload> {
-    let radius = start.distance_to(center);
-    let sweep = arc_sweep_radians(start, end, center, clockwise);
+) -> Vec<ExtractedPath> {
+    let arc = Arc::new(start, end, center, clockwise);
+    let radius = arc.radius();
+    let sweep = arc.sweep_radians();
     let steps = sample_steps(radius * sweep);
     let signed_sweep = if clockwise { -sweep } else { sweep };
     let start_angle = start.angle_from(center);
     (0..=steps)
         .flat_map(|index| {
             let t = index as f64 / steps.max(1) as f64;
-            let angle = start_angle + signed_sweep * t;
-            let at = Point::new(
-                center.x + radius * angle.cos(),
-                center.y + radius * angle.sin(),
-            );
+            let at = arc.point_at(start_angle + signed_sweep * t);
             aperture_paths(geometry, object_transform(object, at))
         })
         .collect()
@@ -306,7 +465,7 @@ fn object_transform(object: &gerber::GraphicalObject, at: Point) -> Affine2 {
     Affine2::placement(
         at,
         object.rotation_degrees,
-        object.mirroring,
+        object.mirroring.into(),
         object.scaling,
     )
 }
@@ -315,16 +474,20 @@ fn sample_steps(length: f64) -> usize {
     (length / SWEEP_SAMPLE_MM).ceil().max(1.0) as usize
 }
 
-fn region_path(contours: &[gerber::Contour]) -> PathPayload {
-    let contours = contours.iter().map(region_contour).collect();
-    PathPayload {
-        path: GeometryPath::filled(FillRule::NonZero),
-        contours,
-    }
+fn region_paths(contours: &[gerber::Contour]) -> Vec<ExtractedPath> {
+    contours
+        .iter()
+        .map(|contour| ExtractedPath {
+            polarity: Polarity::Dark,
+            paint: Paint::Fill {
+                rule: FillRule::EvenOdd,
+            },
+            contours: vec![region_contour(contour)],
+        })
+        .collect()
 }
 
-fn region_contour(contour: &gerber::Contour) -> ContourPayload {
-    let mut bbox = BBox::empty();
+fn region_contour(contour: &gerber::Contour) -> ContourBuf {
     let mut cmds = Vec::new();
     if let Some(first) = contour.segments.first() {
         let start = match *first {
@@ -332,10 +495,9 @@ fn region_contour(contour: &gerber::Contour) -> ContourPayload {
             | gerber::ContourSegment::Arc { start, .. } => point(start),
         };
         cmds.push(PathCmd::move_to(start));
-        bbox.include_point(start);
     }
     for segment in &contour.segments {
-        let cmd = match *segment {
+        cmds.push(match *segment {
             gerber::ContourSegment::Line { end, .. } => PathCmd::line_to(point(end)),
             gerber::ContourSegment::Arc {
                 start,
@@ -350,56 +512,12 @@ fn region_contour(contour: &gerber::Contour) -> ContourPayload {
                     clockwise,
                 )
             }
-        };
-        include_cmd_bbox(&mut bbox, cmds.last().copied(), cmd);
-        cmds.push(cmd);
+        });
     }
     cmds.push(PathCmd::close());
-    ContourPayload { bbox, cmds }
-}
-
-fn include_cmd_bbox(bbox: &mut BBox, previous: Option<PathCmd>, cmd: PathCmd) {
-    match cmd.op {
-        PathOp::MoveTo | PathOp::LineTo => bbox.include_point(cmd.p0),
-        PathOp::ArcTo => {
-            if let Some(start) = previous.and_then(PathCmd::end_point) {
-                bbox.include_circular_arc(start, cmd.p0, cmd.p1, cmd.clockwise);
-            } else {
-                bbox.include_point(cmd.p0);
-                bbox.include_point(cmd.p1);
-            }
-        }
-        PathOp::CubicTo => {
-            bbox.include_point(cmd.p0);
-            bbox.include_point(cmd.p1);
-            bbox.include_point(cmd.p2);
-        }
-        PathOp::Close => {}
-    }
+    ContourBuf::new(cmds)
 }
 
 fn point(p: gerber::Point) -> Point {
     Point::new(p.x, p.y)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn arc_bbox_after_cubic_uses_cubic_endpoint() {
-        let mut bbox = BBox::empty();
-        include_cmd_bbox(
-            &mut bbox,
-            Some(PathCmd::cubic_to(
-                Point::new(100.0, 100.0),
-                Point::new(100.0, 100.0),
-                Point::new(1.0, 0.0),
-            )),
-            PathCmd::arc_to(Point::new(0.0, 1.0), Point::new(0.0, 0.0), false),
-        );
-
-        assert!(bbox.max.x <= 1.0);
-        assert!(bbox.max.y <= 1.0);
-    }
 }

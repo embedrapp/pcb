@@ -213,6 +213,26 @@ pub fn to_kicad_netlist(sch: &Schematic) -> String {
         .unwrap();
         writeln!(out, "      (tstamps \"{ts_uuid}\")").unwrap();
 
+        if comp
+            .instance
+            .internal_connectivity
+            .duplicate_numbers_are_jumpers
+        {
+            writeln!(out, "      (duplicate_pin_numbers_are_jumpers 1)").unwrap();
+        }
+
+        if !comp.instance.internal_connectivity.groups.is_empty() {
+            writeln!(out, "      (jumper_pin_groups").unwrap();
+            for group in &comp.instance.internal_connectivity.groups {
+                write!(out, "        (group").unwrap();
+                for pin in group {
+                    write!(out, " (pin \"{}\")", escape_kicad_string(pin)).unwrap();
+                }
+                writeln!(out, ")").unwrap();
+            }
+            writeln!(out, "      )").unwrap();
+        }
+
         // Explicitly add the standard KiCad "Reference" property pointing to the component's
         // reference designator.  This ensures the field is always present and consistent
         // irrespective of user-specified attributes.
@@ -344,6 +364,8 @@ pub fn to_kicad_netlist(sch: &Schematic) -> String {
                 ord
             }
         });
+        let mut seen_nodes = HashSet::new();
+        sorted_nodes.retain(|node| seen_nodes.insert((node.refdes.clone(), node.pad.clone())));
 
         writeln!(
             out,
@@ -405,9 +427,10 @@ fn collect_pins_for_component(
 // Footprint conversion helper
 // -------------------------------------------------------------------------------------------------
 
-/// Convert footprint strings that may point to a `.kicad_mod` file into a KiCad `lib:fp` identifier.
-/// Returns the (possibly modified) footprint string and optional `(lib_name, dir)` tuple that can be
-/// used to populate the fp-lib-table.
+/// Convert a footprint file path into a KiCad `lib:fp` identifier.
+///
+/// Returns the formatted footprint string and optional `(lib_name, dir)` tuple
+/// that can be used to populate the fp-lib-table.
 pub fn format_footprint(fp: &str) -> (String, Option<(String, PathBuf)>) {
     format_footprint_with_package_roots(fp, &BTreeMap::new())
 }
@@ -417,10 +440,6 @@ pub fn format_footprint_with_package_roots(
     fp: &str,
     package_roots: &BTreeMap<String, PathBuf>,
 ) -> (String, Option<(String, PathBuf)>) {
-    if is_kicad_lib_fp(fp) {
-        return (fp.to_owned(), None);
-    }
-
     let resolved = if fp.starts_with(PACKAGE_URI_PREFIX) {
         crate::resolve_package_uri(fp, package_roots).unwrap_or_else(|_| PathBuf::from(fp))
     } else {
@@ -436,8 +455,10 @@ pub fn try_format_footprint_with_package_roots(
     fp: &str,
     package_roots: &BTreeMap<String, PathBuf>,
 ) -> anyhow::Result<(String, Option<(String, PathBuf)>)> {
-    if is_kicad_lib_fp(fp) {
-        return Ok((fp.to_owned(), None));
+    if looks_like_raw_footprint_library_ref(fp) {
+        anyhow::bail!(
+            "Raw KiCad footprint library references like '{fp}' are not supported; reference a .kicad_mod file path instead"
+        );
     }
 
     let resolved = if fp.starts_with(PACKAGE_URI_PREFIX) {
@@ -627,20 +648,12 @@ fn strip_final_pretty_suffix(name: &str) -> &str {
     name.strip_suffix(".pretty").unwrap_or(name)
 }
 
-/// Determine whether a given string is a KiCad `lib:footprint` reference rather than a file path.
-///
-/// The heuristic is:
-/// 1. The string contains exactly one `:` splitting it into `(lib, footprint)`.
-/// 2. Neither half contains path separators (`/` or `\`).
-/// 3. The left half is not a single-letter Windows drive designator such as `C`.
-fn is_kicad_lib_fp(s: &str) -> bool {
+fn looks_like_raw_footprint_library_ref(s: &str) -> bool {
     if let Some((lib, fp)) = s.split_once(':') {
-        // Filter out Windows drive prefixes like "C:".
         if lib.len() == 1 && lib.chars().all(|c| c.is_ascii_alphabetic()) {
             return false;
         }
 
-        // Any path separator indicates this is still a filesystem path.
         if lib.contains('/') || lib.contains('\\') || fp.contains('/') || fp.contains('\\') {
             return false;
         }
@@ -790,24 +803,25 @@ mod tests {
     }
 
     #[test]
-    fn test_is_kicad_lib_fp() {
-        // Valid KiCad lib:fp format
-        assert!(is_kicad_lib_fp("Resistor_SMD:R_0603_1608Metric"));
-        assert!(is_kicad_lib_fp("Capacitor_SMD:C_0805_2012Metric"));
+    fn test_try_format_rejects_raw_footprint_library_ref() {
+        let err = try_format_footprint_with_package_roots(
+            "Resistor_SMD:R_0603_1608Metric",
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
 
-        // Windows paths (should return false)
-        assert!(!is_kicad_lib_fp("C:\\path\\to\\footprint.kicad_mod"));
-        assert!(!is_kicad_lib_fp("C:footprint.kicad_mod"));
+        assert!(
+            err.to_string()
+                .contains("Raw KiCad footprint library references")
+        );
 
-        // Unix paths (should return false)
-        assert!(!is_kicad_lib_fp("/path/to/footprint.kicad_mod"));
-        assert!(!is_kicad_lib_fp("./relative/path.kicad_mod"));
-
-        // No colon (should return false)
-        assert!(!is_kicad_lib_fp("footprint_name"));
-
-        // Multiple colons (should return false since split_once will only match first)
-        assert!(is_kicad_lib_fp("lib:footprint:extra")); // This will be treated as lib "lib" and footprint "footprint:extra"
+        assert!(
+            try_format_footprint_with_package_roots(
+                "/path/to/footprint.kicad_mod",
+                &BTreeMap::new(),
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -826,18 +840,18 @@ mod tests {
     fn test_format_footprint_for_kicad_pretty_package_root_uri() {
         let mut package_roots = BTreeMap::new();
         package_roots.insert(
-            "gitlab.com/example/libs/footprints@10.0.0".to_string(),
-            PathBuf::from("/tmp/vendor/gitlab.com/example/libs/footprints/10.0.0"),
+            "gitlab.com/example/libs/footprints@10.0.3".to_string(),
+            PathBuf::from("/tmp/vendor/gitlab.com/example/libs/footprints/10.0.3"),
         );
 
         assert_formatted_footprint(
             format_footprint_with_package_roots(
-                "package://gitlab.com/example/libs/footprints@10.0.0/Capacitor_SMD.pretty/C_0402_1005Metric.kicad_mod",
+                "package://gitlab.com/example/libs/footprints@10.0.3/Capacitor_SMD.pretty/C_0402_1005Metric.kicad_mod",
                 &package_roots,
             ),
-            "example_libs_footprints_Capacitor_SMD@10.0.0:C_0402_1005Metric",
-            "example_libs_footprints_Capacitor_SMD@10.0.0",
-            "/tmp/vendor/gitlab.com/example/libs/footprints/10.0.0/Capacitor_SMD.pretty",
+            "example_libs_footprints_Capacitor_SMD@10.0.3:C_0402_1005Metric",
+            "example_libs_footprints_Capacitor_SMD@10.0.3",
+            "/tmp/vendor/gitlab.com/example/libs/footprints/10.0.3/Capacitor_SMD.pretty",
         );
     }
 
@@ -1016,5 +1030,49 @@ mod tests {
 
         let netlist = to_kicad_netlist(&schematic);
         assert!(netlist.contains("(node (ref \"D1\") (pin \"2\") (pintype \"stereo\"))"));
+    }
+
+    #[test]
+    fn emits_component_internal_connectivity() {
+        let module_ref = crate::ModuleRef::from_path(Path::new("/tmp/test.zen"), "<root>");
+        let comp_ref = InstanceRef::new(module_ref.clone(), vec!["JP1".into()]);
+        let mut component = crate::Instance::component(module_ref.clone());
+        component.reference_designator = Some("JP1".to_owned());
+        component.attributes.insert(
+            "footprint".into(),
+            AttributeValue::String("Jumper:SolderJumper".to_owned()),
+        );
+        component.internal_connectivity = crate::InternalConnectivity::new(
+            true,
+            [std::collections::BTreeSet::from([
+                "1".to_owned(),
+                "3".to_owned(),
+            ])],
+        );
+
+        let port_ref = InstanceRef::new(module_ref.clone(), vec!["JP1".into(), "A".into()]);
+        let mut port = crate::Instance::port(module_ref.clone());
+        port.attributes.insert(
+            "pads".into(),
+            AttributeValue::Array(vec![AttributeValue::String("1".to_owned())]),
+        );
+        component.add_child("A", port_ref.clone());
+
+        let mut schematic = Schematic::new();
+        schematic.add_instance(comp_ref, component);
+        schematic.add_instance(port_ref.clone(), port);
+        schematic.add_net(crate::Net {
+            kind: "Net".to_owned(),
+            id: 1,
+            name: "SHARED".to_owned(),
+            ports: vec![port_ref],
+            properties: HashMap::new(),
+        });
+
+        let netlist = to_kicad_netlist(&schematic);
+
+        assert!(netlist.contains("(duplicate_pin_numbers_are_jumpers 1)"));
+        assert!(netlist.contains("(jumper_pin_groups"));
+        assert!(netlist.contains("(group (pin \"1\") (pin \"3\"))"));
     }
 }

@@ -7,13 +7,12 @@ mod resolve;
 mod scan;
 mod versions;
 
-pub use materialize::vendor_selected;
+pub use materialize::plan_vendor_selected;
 pub use mvs::{DepGraph, DepGraphNode, PackageResolution, PackageResolver};
 pub use pcb_zen_core::resolution::{
     FrozenDepId as ResolvedDepId, compatibility_lane, parse_lane_qualified_key,
 };
 pub use resolve::{
-    attach_mvs_v2_resolution_for_packages, build_frozen_resolution_maps,
-    resolve_workspace_dependencies, sync_workspace_vendor, target_package_urls_for_path,
+    build_frozen_resolution_maps, resolve_workspace_dependencies, target_package_urls_for_path,
 };
 pub use versions::SpecVersionResolver;

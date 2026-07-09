@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use pcb_ui::Spinner;
 use pcb_zen_core::FileProvider;
 use pcb_zen_core::config::split_repo_and_subpath;
-use pcb_zen_core::embedded_stdlib::compute_stdlib_dir_hash;
+use pcb_zen_core::stdlib::native::{copy_source, discover_source, source_matches_target};
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{OptionalExtension, params};
@@ -19,20 +19,20 @@ use crate::tags;
 /// Bump this when changing table schemas. Encoded in the filename so a new
 /// version just creates a fresh file — no migration logic needed.
 const SCHEMA_VERSION: i32 = 4;
-static FETCHED_BARE_REPOS: LazyLock<Mutex<BTreeSet<String>>> =
+static FETCHED_SOURCE_REPOS: LazyLock<Mutex<BTreeSet<String>>> =
     LazyLock::new(|| Mutex::new(BTreeSet::new()));
 
-fn bare_repo_fetched_in_process(repo_url: &str) -> bool {
-    FETCHED_BARE_REPOS
+fn source_repo_fetched_in_process(repo_url: &str) -> bool {
+    FETCHED_SOURCE_REPOS
         .lock()
-        .expect("bare repo cache mutex poisoned")
+        .expect("source repo cache mutex poisoned")
         .contains(repo_url)
 }
 
-fn mark_bare_repo_fetched(repo_url: &str) {
-    FETCHED_BARE_REPOS
+fn mark_source_repo_fetched(repo_url: &str) {
+    FETCHED_SOURCE_REPOS
         .lock()
-        .expect("bare repo cache mutex poisoned")
+        .expect("source repo cache mutex poisoned")
         .insert(repo_url.to_string());
 }
 
@@ -175,8 +175,8 @@ impl CacheIndex {
     }
 
     fn discover_remote_packages(&self, repo_url: &str) -> Result<()> {
-        let bare_dir = ensure_bare_repo(repo_url)?;
-        let tags = git::list_all_tags(&bare_dir)?;
+        let source_dir = ensure_source_repo(repo_url)?;
+        let tags = git::list_all_tags(&source_dir)?;
 
         let mut packages: BTreeMap<String, Version> = BTreeMap::new();
         for tag in tags {
@@ -280,21 +280,15 @@ pub fn cache_base() -> PathBuf {
     pcb_zen_core::DefaultFileProvider::new().cache_dir()
 }
 
-/// Ensure the embedded stdlib is materialized into the workspace stdlib location.
+/// Ensure the toolchain stdlib is materialized into the workspace stdlib location.
 ///
-/// Materializes to `<workspace>/.pcb/stdlib`, replacing the directory only when
-/// its canonical content hash differs from the embedded stdlib hash.
+/// Materializes to the workspace-local, toolchain-versioned stdlib root.
 pub fn ensure_stdlib_materialized(workspace_root: &std::path::Path) -> Result<PathBuf> {
     let target = pcb_zen_core::workspace_stdlib_root(workspace_root);
     let _lock = git::lock_dir(&target)?;
 
-    let expected_hash = pcb_zen_core::embedded_stdlib::embedded_stdlib_hash();
-    let current_hash = if target.exists() {
-        compute_stdlib_dir_hash(&target).ok()
-    } else {
-        None
-    };
-    if current_hash.as_deref() == Some(expected_hash) {
+    let source = discover_source()?;
+    if target.exists() && source_matches_target(&source, &target).unwrap_or(false) {
         return Ok(target);
     }
 
@@ -309,17 +303,7 @@ pub fn ensure_stdlib_materialized(workspace_root: &std::path::Path) -> Result<Pa
             })
             .with_context(|| format!("Failed to replace stdlib at {}", target.display()))?;
     }
-    pcb_zen_core::embedded_stdlib::extract_embedded_stdlib(&target)?;
-
-    let refreshed_hash = compute_stdlib_dir_hash(&target)
-        .with_context(|| format!("Failed to hash materialized stdlib at {}", target.display()))?;
-    if refreshed_hash != expected_hash {
-        anyhow::bail!(
-            "Materialized stdlib hash mismatch: expected {}, got {}",
-            expected_hash,
-            refreshed_hash
-        );
-    }
+    copy_source(&source, &target)?;
 
     Ok(target)
 }
@@ -440,39 +424,39 @@ fn create_workspace_cache_link(
     }
 }
 
-pub fn ensure_bare_repo(repo_url: &str) -> Result<PathBuf> {
-    let bare_dir = bare_repo_dir(repo_url)?;
+pub fn ensure_source_repo(repo_url: &str) -> Result<PathBuf> {
+    let source_dir = source_repo_dir(repo_url)?;
 
-    if bare_dir.join("HEAD").exists() && bare_repo_fetched_in_process(repo_url) {
-        return Ok(bare_dir);
+    if source_dir.join(".git").exists() && source_repo_fetched_in_process(repo_url) {
+        return Ok(source_dir);
     }
 
-    let _lock = git::lock_dir(&bare_dir)?;
-    let repo_exists = bare_dir.join("HEAD").exists();
-    if repo_exists && bare_repo_fetched_in_process(repo_url) {
-        return Ok(bare_dir);
+    let _lock = git::lock_dir(&source_dir)?;
+    let repo_exists = source_dir.join(".git").exists();
+    if repo_exists && source_repo_fetched_in_process(repo_url) {
+        return Ok(source_dir);
     }
 
     let spinner = Spinner::builder(format!("Fetching {repo_url}")).start();
     let result = if repo_exists {
-        git::fetch_in_bare_repo(&bare_dir)
+        git::fetch_in_source_repo(&source_dir)
     } else {
-        git::clone_bare_with_fallback(repo_url, &bare_dir)
+        git::clone_with_fallback(repo_url, &source_dir)
     };
     if let Err(err) = result {
         spinner.error(format!("Failed to fetch {repo_url}"));
         return Err(err);
     }
     spinner.finish();
-    mark_bare_repo_fetched(repo_url);
+    mark_source_repo_fetched(repo_url);
 
-    Ok(bare_dir)
+    Ok(source_dir)
 }
 
-pub fn bare_repo_dir(repo_url: &str) -> Result<PathBuf> {
+pub fn source_repo_dir(repo_url: &str) -> Result<PathBuf> {
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
-    Ok(home.join(".pcb/bare").join(repo_url))
+    Ok(home.join(".pcb/src").join(repo_url))
 }
 
 #[cfg(test)]
