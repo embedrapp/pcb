@@ -58,10 +58,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p package dist
+          mkdir -p package/lib dist
           cp target/release/pcbc package/pcb
+          cp -R lib/std package/lib/std
           chmod +x package/pcb
-          tar -C package -cJf dist/pcb-x86_64-unknown-linux-gnu.tar.xz pcb
+          test -f package/lib/std/pcb.toml
+          package/pcb build --offline test-workspaces/with-pcb-toml/boards/WorkspaceTestBoard.zen
+          tar -C package -cJf dist/pcb-x86_64-unknown-linux-gnu.tar.xz pcb lib
           sha256sum dist/pcb-x86_64-unknown-linux-gnu.tar.xz > dist/pcb-x86_64-unknown-linux-gnu.tar.xz.sha256
 
       - name: Stage macOS artifact
@@ -69,19 +72,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p package dist
+          mkdir -p package/lib dist
           cp target/release/pcb package/pcb
+          cp -R lib/std package/lib/std
           chmod +x package/pcb
-          (cd package && zip -q ../dist/pcb-macos-universal.zip pcb)
+          test -f package/lib/std/pcb.toml
+          package/pcb build --offline test-workspaces/with-pcb-toml/boards/WorkspaceTestBoard.zen
+          (cd package && zip -qr ../dist/pcb-macos-universal.zip pcb lib)
           shasum -a 256 dist/pcb-macos-universal.zip > dist/pcb-macos-universal.zip.sha256
 
       - name: Stage Windows artifact
         if: matrix.name == 'windows-x64'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path package, dist | Out-Null
+          New-Item -ItemType Directory -Force -Path package/lib, dist | Out-Null
           Copy-Item target/release/pcbc.exe package/pcb.exe
-          Compress-Archive -LiteralPath package/pcb.exe -DestinationPath dist/pcb-x86_64-pc-windows-msvc.zip -Force
+          Copy-Item lib/std package/lib/std -Recurse
+          if (-not (Test-Path package/lib/std/pcb.toml)) {
+            throw "Packaged pcb standard library is missing package/lib/std/pcb.toml"
+          }
+          & package/pcb.exe build --offline test-workspaces/with-pcb-toml/boards/WorkspaceTestBoard.zen
+          if ($LASTEXITCODE -ne 0) {
+            throw "Packaged pcb runtime smoke build failed"
+          }
+          Compress-Archive -Path package/* -DestinationPath dist/pcb-x86_64-pc-windows-msvc.zip -Force
           $hash = Get-FileHash dist/pcb-x86_64-pc-windows-msvc.zip -Algorithm SHA256
           "$($hash.Hash.ToLowerInvariant())  pcb-x86_64-pc-windows-msvc.zip" | Set-Content dist/pcb-x86_64-pc-windows-msvc.zip.sha256
 
