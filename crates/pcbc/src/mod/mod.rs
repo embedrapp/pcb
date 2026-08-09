@@ -412,19 +412,6 @@ fn print_frozen_resolution(
     }
 }
 
-/// The manifest edits that syncing `targets` would make, without writing them.
-/// Fails if syncing would also change vendor/.
-pub(crate) fn plan_manifest_edits(
-    workspace: &WorkspaceInfo,
-    targets: &[AddTarget],
-) -> Result<Vec<ManifestEdit>> {
-    let (manifest_edits, vendor_plan) = plan_sync(workspace, targets, None, false)?;
-    if !vendor_plan.is_empty() {
-        bail!("vendor/ is not synced; run `pcb sync` and commit the changes");
-    }
-    Ok(manifest_edits)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SyncMode {
     Write,

@@ -126,4 +126,4 @@ jobs:
           gh release create "$TAG" artifacts/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "pcb ${TAG#embedr-v}" \
-            --notes "Downstream pcb CLI build from embedrapp/pcb, including fork-specific fixes."
+            --notes "Embedr's local-first pcb CLI, synced with upstream 0.4.26 and packaged with its standard library. Diode-hosted service flows remain excluded."
