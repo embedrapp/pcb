@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::ffi::OsString;
 
 use anyhow::{Context, bail};
 use jiff::{
@@ -11,18 +10,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tar::Archive;
-use tempfile::Builder;
-use url::Url;
-
-const DIODEHUB_CREDENTIAL_CACHE_TIMEOUT_SECONDS: u64 = 55 * 60;
-const DEFAULT_DIODEHUB_HOST: &str = "code.diode.computer";
-const LEGACY_DIODEHUB_CREDENTIAL_HELPER: &str = "!pcb auth git";
-const DIODEHUB_CREDENTIAL_HELPER_CONFIG: &str = "credential.https://code.diode.computer.helper";
-const DIODEHUB_CREDENTIAL_USE_HTTP_PATH_CONFIG: &str =
-    "credential.https://code.diode.computer.useHttpPath";
-const PCB_GIT_CONFIG_FILE: &str = "gitconfig";
-const PCB_GIT_CONFIG_INCLUDE: &str = "include.path";
-const GIT_CONFIG_NOT_FOUND: i32 = 5;
 
 #[derive(Debug, Clone)]
 pub struct TagMetadata {
@@ -52,9 +39,7 @@ fn git_network(repo_root: &Path) -> anyhow::Result<Command> {
 }
 
 fn git_global_network() -> anyhow::Result<Command> {
-    let mut cmd = git_global();
-    add_default_diodehub_https_auth_config(&mut cmd, &credential_cache_socket()?)?;
-    Ok(cmd)
+    Ok(git_global())
 }
 
 fn git_global_network_with_prompt(interactive: bool) -> anyhow::Result<Command> {
@@ -63,77 +48,6 @@ fn git_global_network_with_prompt(interactive: bool) -> anyhow::Result<Command> 
         make_noninteractive(&mut cmd);
     }
     Ok(cmd)
-}
-
-fn pcb_config_dir() -> anyhow::Result<PathBuf> {
-    let config_dir = if let Ok(config_dir) = std::env::var("PCB_CONFIG_DIR") {
-        PathBuf::from(config_dir)
-    } else {
-        dirs::home_dir()
-            .context("Failed to get home directory")?
-            .join(".pcb")
-    };
-    let config_dir = if config_dir.is_absolute() {
-        config_dir
-    } else {
-        std::env::current_dir()
-            .context("Failed to resolve PCB config directory")?
-            .join(config_dir)
-    };
-    Ok(config_dir)
-}
-
-fn credential_cache_socket() -> anyhow::Result<PathBuf> {
-    Ok(pcb_config_dir()?
-        .join("git-credential-cache")
-        .join("socket"))
-}
-
-fn pcb_git_config_path() -> anyhow::Result<PathBuf> {
-    Ok(pcb_config_dir()?.join(PCB_GIT_CONFIG_FILE))
-}
-
-fn credential_cache_helper(socket: &Path) -> anyhow::Result<String> {
-    let socket = socket
-        .to_str()
-        .context("PCB config directory is not valid UTF-8")?;
-    Ok(format!(
-        "cache --timeout={DIODEHUB_CREDENTIAL_CACHE_TIMEOUT_SECONDS} --socket={}",
-        shell_quote(socket)
-    ))
-}
-
-fn diodehub_credential_helper(host: &str) -> String {
-    format!("!pcb auth git --host={}", shell_quote(host))
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-fn add_git_config(cmd: &mut Command, key: &str, value: &str) {
-    cmd.arg("-c").arg(format!("{key}={value}"));
-}
-
-// Preserve automatic authentication for existing Commercial users. Other
-// deployments use the managed Git configuration installed by `configure`.
-fn add_default_diodehub_https_auth_config(
-    cmd: &mut Command,
-    cache_socket: &Path,
-) -> anyhow::Result<()> {
-    add_git_config(cmd, DIODEHUB_CREDENTIAL_HELPER_CONFIG, "");
-    add_git_config(
-        cmd,
-        DIODEHUB_CREDENTIAL_HELPER_CONFIG,
-        &credential_cache_helper(cache_socket)?,
-    );
-    add_git_config(
-        cmd,
-        DIODEHUB_CREDENTIAL_HELPER_CONFIG,
-        &diodehub_credential_helper(DEFAULT_DIODEHUB_HOST),
-    );
-    add_git_config(cmd, DIODEHUB_CREDENTIAL_USE_HTTP_PATH_CONFIG, "true");
-    Ok(())
 }
 
 fn run_silent(mut cmd: Command) -> anyhow::Result<()> {
@@ -216,150 +130,6 @@ pub fn init(repo_root: &Path) -> anyhow::Result<()> {
         .context("Failed to run `git init`")?;
     if !status.success() {
         bail!("`git init` failed with {status}");
-    }
-    Ok(())
-}
-
-pub fn configure_diodehub_credentials_globally(repository_url: &str) -> anyhow::Result<()> {
-    let url = credential_url(repository_url)?;
-    let credential_origin = url.origin().ascii_serialization();
-    let credential_host = url.host_str().expect("credential URL has a host");
-    let config_path = pcb_git_config_path()?;
-    let cache_helper = credential_cache_helper(&credential_cache_socket()?)?;
-    write_pcb_git_config(
-        &config_path,
-        &credential_origin,
-        credential_host,
-        &cache_helper,
-    )?;
-    ensure_git_config_include(&config_path)?;
-    remove_legacy_diodehub_config()
-}
-
-pub fn unconfigure_diodehub_credentials_globally() -> anyhow::Result<()> {
-    clear_diodehub_credential_cache();
-    let config_path = pcb_git_config_path()?;
-    let config_path = config_path
-        .to_str()
-        .context("PCB config directory is not valid UTF-8")?;
-    unset_git_config_value(PCB_GIT_CONFIG_INCLUDE, config_path)?;
-    match std::fs::remove_file(config_path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).context("Failed to remove PCB Git configuration"),
-    }
-    remove_legacy_diodehub_config()
-}
-
-fn credential_url(repository_url: &str) -> anyhow::Result<Url> {
-    let url = Url::parse(repository_url).context("Invalid DiodeHub repository URL")?;
-    if url.scheme() != "https" {
-        bail!("DiodeHub repository URL must use HTTPS");
-    }
-    if url.host_str().is_none() {
-        bail!("DiodeHub repository URL must include a host");
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        bail!("DiodeHub repository URL must not include credentials");
-    }
-    Ok(url)
-}
-
-fn write_pcb_git_config(
-    config_path: &Path,
-    credential_origin: &str,
-    credential_host: &str,
-    cache_helper: &str,
-) -> anyhow::Result<()> {
-    let config_dir = config_path
-        .parent()
-        .context("PCB Git configuration must have a parent directory")?;
-    std::fs::create_dir_all(config_dir).context("Failed to create PCB config directory")?;
-    let temp = Builder::new()
-        .prefix(".gitconfig.")
-        .tempfile_in(config_dir)
-        .context("Failed to create temporary PCB Git configuration")?;
-    let temp_path = temp.into_temp_path();
-    let helper_config = format!("credential.{credential_origin}.helper");
-    let use_http_path_config = format!("credential.{credential_origin}.useHttpPath");
-    let credential_helper = diodehub_credential_helper(credential_host);
-
-    for (key, value) in [
-        (helper_config.as_str(), ""),
-        (helper_config.as_str(), cache_helper),
-        (helper_config.as_str(), credential_helper.as_str()),
-        (use_http_path_config.as_str(), "true"),
-    ] {
-        run_git_config_file(&temp_path, &["--add", key, value])?;
-    }
-    temp_path
-        .persist(config_path)
-        .map_err(|error| anyhow::anyhow!(error))
-        .context("Failed to persist PCB Git configuration")?;
-    Ok(())
-}
-
-fn ensure_git_config_include(config_path: &Path) -> anyhow::Result<()> {
-    let config_path = config_path
-        .to_str()
-        .context("PCB config directory is not valid UTF-8")?;
-    unset_git_config_value(PCB_GIT_CONFIG_INCLUDE, config_path)?;
-    run_git_config(&["--add", PCB_GIT_CONFIG_INCLUDE, config_path])
-}
-
-fn remove_legacy_diodehub_config() -> anyhow::Result<()> {
-    let cache_helper = credential_cache_helper(&credential_cache_socket()?)?;
-    for value in ["", cache_helper.as_str(), LEGACY_DIODEHUB_CREDENTIAL_HELPER] {
-        unset_git_config_value(DIODEHUB_CREDENTIAL_HELPER_CONFIG, value)?;
-    }
-    unset_git_config_value(DIODEHUB_CREDENTIAL_USE_HTTP_PATH_CONFIG, "true")
-}
-
-pub fn clear_diodehub_credential_cache() {
-    let _ = stop_credential_cache();
-}
-
-fn stop_credential_cache() -> anyhow::Result<()> {
-    let mut socket_argument = OsString::from("--socket=");
-    socket_argument.push(credential_cache_socket()?);
-    let output = git_global()
-        .arg("credential-cache")
-        .arg(socket_argument)
-        .arg("exit")
-        .output()
-        .context("Failed to stop Git credential cache")?;
-    if !output.status.success() {
-        bail!("`git credential-cache exit` failed with {}", output.status);
-    }
-    Ok(())
-}
-
-fn run_git_config(args: &[&str]) -> anyhow::Result<()> {
-    let mut cmd = git_global();
-    cmd.args(["config", "--global"]).args(args);
-    run_silent(cmd)
-}
-
-fn run_git_config_file(path: &Path, args: &[&str]) -> anyhow::Result<()> {
-    let mut cmd = git_global();
-    cmd.args(["config", "--file"]).arg(path).args(args);
-    run_silent(cmd)
-}
-
-fn unset_git_config_value(key: &str, value: &str) -> anyhow::Result<()> {
-    let status = git_global()
-        .args([
-            "config",
-            "--global",
-            "--fixed-value",
-            "--unset-all",
-            key,
-            value,
-        ])
-        .status()
-        .context("Failed to run `git config`")?;
-    if !status.success() && status.code() != Some(GIT_CONFIG_NOT_FOUND) {
-        bail!("`git config --global --unset-all {key}` failed with {status}");
     }
     Ok(())
 }
@@ -1030,8 +800,8 @@ mod tests {
             "github.com/diodeinc/stdlib"
         );
         assert_eq!(
-            parse_remote_url("ssh://git@code.diode.computer/demo/b/DM0001").unwrap(),
-            "code.diode.computer/demo/b/DM0001"
+            parse_remote_url("ssh://git@gitlab.com/demo/b/DM0001").unwrap(),
+            "gitlab.com/demo/b/DM0001"
         );
     }
 
@@ -1051,7 +821,7 @@ mod tests {
     fn remote_fallback_uses_ssh_after_https_failure() {
         let mut attempts = Vec::new();
         let (value, url) =
-            with_remote_fallback("code.diode.computer/diode/registry", |url, interactive| {
+            with_remote_fallback("github.com/diodeinc/registry", |url, interactive| {
                 attempts.push((url.to_string(), interactive));
                 if url.starts_with("https://") {
                     anyhow::bail!("HTTPS unavailable");
@@ -1061,18 +831,15 @@ mod tests {
             .unwrap();
 
         assert_eq!(value, "fetched");
-        assert_eq!(url, "git@code.diode.computer:diode/registry.git");
+        assert_eq!(url, "git@github.com:diodeinc/registry.git");
         assert_eq!(
             attempts,
             [
                 (
-                    "https://code.diode.computer/diode/registry.git".to_string(),
+                    "https://github.com/diodeinc/registry.git".to_string(),
                     false
                 ),
-                (
-                    "git@code.diode.computer:diode/registry.git".to_string(),
-                    true
-                ),
+                ("git@github.com:diodeinc/registry.git".to_string(), true),
             ]
         );
     }
@@ -1080,7 +847,7 @@ mod tests {
     #[test]
     fn remote_fallback_stops_after_https_success() {
         let mut attempts = Vec::new();
-        let (value, _) = with_remote_fallback("code.diode.computer/diode/registry", |_, prompt| {
+        let (value, _) = with_remote_fallback("github.com/diodeinc/registry", |_, prompt| {
             attempts.push(prompt);
             Ok(None::<String>)
         })
@@ -1088,14 +855,6 @@ mod tests {
 
         assert_eq!(value, None);
         assert_eq!(attempts, [false]);
-    }
-
-    #[test]
-    fn quotes_credential_cache_socket_for_the_shell() {
-        assert_eq!(
-            shell_quote("/tmp/PCB's cache/socket"),
-            "'/tmp/PCB'\\''s cache/socket'"
-        );
     }
 
     #[test]
@@ -1116,19 +875,5 @@ mod tests {
             env(std::ffi::OsStr::new("GCM_INTERACTIVE")),
             Some(std::ffi::OsStr::new("never"))
         );
-    }
-
-    #[test]
-    fn process_local_auth_preserves_the_commercial_default() {
-        let mut command = git_global();
-        add_default_diodehub_https_auth_config(&mut command, Path::new("/tmp/pcb-cache")).unwrap();
-        let args = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-
-        assert!(args.iter().any(|arg| {
-            arg == "credential.https://code.diode.computer.helper=!pcb auth git --host='code.diode.computer'"
-        }));
     }
 }
