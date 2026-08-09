@@ -92,7 +92,7 @@ impl LoadSpec {
     ///
     /// • **Package URI** – `"package://<url>/<path>"`.
     ///   A stable, machine-independent reference to a file within a resolved package.
-    ///   Example: `"package://code.diode.computer/diode/registry/reference/TPS54331/TPS54331.zen"`.
+    ///   Example: `"package://github.com/diodeinc/registry/reference/TPS54331/TPS54331.zen"`.
     ///
     /// • **Stdlib package URI** – `"package://stdlib/<path>"`.
     ///   A stable reference to a toolchain-managed stdlib file.
@@ -292,12 +292,12 @@ mod tests {
     #[test]
     fn test_parse_load_spec_package_uri() {
         let spec = LoadSpec::parse(
-            "package://code.diode.computer/diode/registry/reference/TPS54331/TPS54331.zen",
+            "package://github.com/diodeinc/registry/reference/TPS54331/TPS54331.zen",
         );
         assert_eq!(
             spec,
             Some(LoadSpec::PackageUri {
-                uri: "package://code.diode.computer/diode/registry/reference/TPS54331/TPS54331.zen"
+                uri: "package://github.com/diodeinc/registry/reference/TPS54331/TPS54331.zen"
                     .to_string(),
             })
         );
@@ -384,7 +384,7 @@ mod tests {
             },
             LoadSpec::local_path("./relative/file.zen"),
             LoadSpec::PackageUri {
-                uri: "package://code.diode.computer/diode/registry/reference/TPS54331/TPS54331.zen"
+                uri: "package://github.com/diodeinc/registry/reference/TPS54331/TPS54331.zen"
                     .to_string(),
             },
         ];
