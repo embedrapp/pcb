@@ -261,7 +261,7 @@ pub struct WorkspaceConfig {
     pub name: Option<String>,
 
     /// Repository URL for workspace (V2 only, required for V2 multi-package workspaces)
-    /// Example: "code.diode.computer/diode/registry"
+    /// Example: "github.com/diodeinc/registry"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repository: Option<String>,
 
@@ -291,7 +291,7 @@ pub struct WorkspaceConfig {
     pub default_board: Option<String>,
 
     /// Patterns for dependencies to auto-vendor during build (supports globs)
-    /// Example: ["code.diode.computer/diode/registry/*"]
+    /// Example: ["github.com/diodeinc/registry/*"]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vendor: Vec<String>,
 
@@ -544,7 +544,7 @@ name = "legacy"
         let err = PcbToml::parse(
             r#"
 [packages]
-registry = "code.diode.computer/diode/registry"
+registry = "github.com/diodeinc/registry"
 "#,
         )
         .expect_err("legacy [packages] should not parse");
@@ -653,7 +653,7 @@ path = "test.zen"
 
 [dependencies]
 "github.com/diodeinc/stdlib" = "0.3.2"
-"code.diode.computer/diode/registry/reference/ti/tps54331" = { version = "^1.0.0" }
+"github.com/diodeinc/registry/reference/ti/tps54331" = { version = "^1.0.0" }
 "github.com/user/custom" = { branch = "main" }
 "github.com/user/local" = { path = "../local" }
 "#;
@@ -676,7 +676,7 @@ path = "test.zen"
         match config
             .dependencies
             .direct
-            .get("code.diode.computer/diode/registry/reference/ti/tps54331")
+            .get("github.com/diodeinc/registry/reference/ti/tps54331")
             .unwrap()
         {
             DependencySpec::Detailed(d) => {
