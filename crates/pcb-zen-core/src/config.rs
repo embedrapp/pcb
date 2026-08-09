@@ -234,7 +234,7 @@ impl PcbToml {
     ///
     /// Takes the last path segment as the alias key. Only creates alias if unique (no collisions).
     /// Examples:
-    /// - "code.diode.computer/diode/registry/reference/XAL7070-562MEx" → "@XAL7070-562MEx"
+    /// - "github.com/diodeinc/registry/reference/XAL7070-562MEx" → "@XAL7070-562MEx"
     pub fn auto_generated_aliases(&self) -> HashMap<String, String> {
         let mut aliases = HashMap::new();
         let mut seen_names: HashMap<String, usize> = HashMap::new();
@@ -293,7 +293,7 @@ pub struct WorkspaceConfig {
     pub name: Option<String>,
 
     /// Repository URL for workspace (V2 only, required for V2 multi-package workspaces)
-    /// Example: "code.diode.computer/diode/registry"
+    /// Example: "github.com/diodeinc/registry"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repository: Option<String>,
 
@@ -323,7 +323,7 @@ pub struct WorkspaceConfig {
     pub default_board: Option<String>,
 
     /// Patterns for dependencies to auto-vendor during build (supports globs)
-    /// Example: ["code.diode.computer/diode/registry/*"]
+    /// Example: ["github.com/diodeinc/registry/*"]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vendor: Vec<String>,
 
@@ -601,7 +601,7 @@ name = "legacy"
         let err = PcbToml::parse(
             r#"
 [packages]
-registry = "code.diode.computer/diode/registry"
+registry = "github.com/diodeinc/registry"
 "#,
         )
         .expect_err("legacy [packages] should not parse");
@@ -703,7 +703,7 @@ path = "test.zen"
 
 [dependencies]
 "github.com/diodeinc/stdlib" = "0.3.2"
-"code.diode.computer/diode/registry/reference/ti/tps54331" = { version = "^1.0.0" }
+"github.com/diodeinc/registry/reference/ti/tps54331" = { version = "^1.0.0" }
 "github.com/user/custom" = { branch = "main" }
 "github.com/user/local" = { path = "../local" }
 "#;
@@ -726,7 +726,7 @@ path = "test.zen"
         match config
             .dependencies
             .direct
-            .get("code.diode.computer/diode/registry/reference/ti/tps54331")
+            .get("github.com/diodeinc/registry/reference/ti/tps54331")
             .unwrap()
         {
             DependencySpec::Detailed(d) => {
@@ -872,7 +872,7 @@ name = "Test"
 path = "test.zen"
 
 [patch]
-"code.diode.computer/diode/registry/components/FOO" = { branch = "feature-branch" }
+"github.com/diodeinc/registry/components/FOO" = { branch = "feature-branch" }
 "#;
 
         let config = PcbToml::parse(content).unwrap();
@@ -880,7 +880,7 @@ path = "test.zen"
 
         let patch = config
             .patch
-            .get("code.diode.computer/diode/registry/components/FOO")
+            .get("github.com/diodeinc/registry/components/FOO")
             .unwrap();
         assert_eq!(patch.branch.as_deref(), Some("feature-branch"));
         assert_eq!(patch.path, None);
@@ -898,7 +898,7 @@ name = "Test"
 path = "test.zen"
 
 [patch]
-"code.diode.computer/diode/registry/components/BAR" = { rev = "abc123def456" }
+"github.com/diodeinc/registry/components/BAR" = { rev = "abc123def456" }
 "#;
 
         let config = PcbToml::parse(content).unwrap();
@@ -906,7 +906,7 @@ path = "test.zen"
 
         let patch = config
             .patch
-            .get("code.diode.computer/diode/registry/components/BAR")
+            .get("github.com/diodeinc/registry/components/BAR")
             .unwrap();
         assert_eq!(patch.rev.as_deref(), Some("abc123def456"));
         assert_eq!(patch.path, None);
