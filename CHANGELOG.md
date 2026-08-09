@@ -55,6 +55,10 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 - Preserve finished-board material when routing array clearance around plated edge pads.
 - Keep the exact round caps and thick arcs of thin strokes in STEP silkscreen and copper.
 
+### Changed
+
+- Synced the local-first Embedr CLI with upstream 0.4.51 while preserving offline runtime packaging, generic Git dependency resolution, and the removal of Diode-hosted service flows.
+
 ## [0.4.53] - 2026-09-14
 
 ### Added

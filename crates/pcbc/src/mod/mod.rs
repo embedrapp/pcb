@@ -412,22 +412,6 @@ fn print_frozen_resolution(
     }
 }
 
-pub(crate) fn sync_targets(
-    workspace: &WorkspaceInfo,
-    targets: &[AddTarget],
-    verbose: bool,
-    prune_vendor: bool,
-) -> Result<()> {
-    run_resolution(
-        workspace,
-        targets,
-        verbose,
-        None,
-        prune_vendor,
-        SyncMode::Write,
-    )
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SyncMode {
     Write,
