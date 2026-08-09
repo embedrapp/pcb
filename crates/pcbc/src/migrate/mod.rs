@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item, value};
 
 mod kicad_projects;
-mod registry;
 
 type PcbLane = (u32, u32);
 
@@ -136,14 +135,6 @@ fn migrate_workspace(root: &Path) -> Result<()> {
             required,
             target,
             pcb_toml_path.display()
-        );
-    }
-
-    let registry_migration = registry::migrate_registry_references(root)?;
-    if registry_migration.manifests != 0 || registry_migration.sources != 0 {
-        println!(
-            "pcb: migrated registry references in {} manifest(s) and {} .zen file(s)",
-            registry_migration.manifests, registry_migration.sources
         );
     }
 
