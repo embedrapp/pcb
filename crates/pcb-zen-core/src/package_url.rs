@@ -1,9 +1,9 @@
 use std::borrow::Cow;
 
-/// Legacy package repository migrated to DiodeHub.
+/// Public package repository used by the local-first fork.
 pub const LEGACY_REGISTRY_REPOSITORY: &str = "github.com/diodeinc/registry";
-/// Canonical package repository on DiodeHub.
-pub const CANONICAL_REGISTRY_REPOSITORY: &str = "code.diode.computer/diode/registry";
+/// Keep the public Git repository canonical instead of rewriting through a hosted service.
+pub const CANONICAL_REGISTRY_REPOSITORY: &str = LEGACY_REGISTRY_REPOSITORY;
 
 /// Canonicalize a package URL, dependency key, or package-prefix glob.
 ///
@@ -62,15 +62,15 @@ mod tests {
         );
         assert_eq!(
             canonicalize_package_reference("github.com/diodeinc/registry/components/Foo/Foo.zen"),
-            "code.diode.computer/diode/registry/components/Foo/Foo.zen"
+            "github.com/diodeinc/registry/components/Foo/Foo.zen"
         );
         assert_eq!(
             canonicalize_package_reference("github.com/diodeinc/registry/components/Foo@0.4"),
-            "code.diode.computer/diode/registry/components/Foo@0.4"
+            "github.com/diodeinc/registry/components/Foo@0.4"
         );
         assert_eq!(
             canonicalize_package_reference("github.com/diodeinc/registry@0.4"),
-            "code.diode.computer/diode/registry@0.4"
+            "github.com/diodeinc/registry@0.4"
         );
         assert_eq!(
             canonicalize_package_reference("github.com/diodeinc/registry-old/components/Foo"),
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn resolves_legacy_registry_reference_with_canonical_identity() {
         let legacy = "github.com/diodeinc/registry/components/Foo/Foo.zen";
-        let canonical = "code.diode.computer/diode/registry/components/Foo/Foo.zen";
+        let canonical = "github.com/diodeinc/registry/components/Foo/Foo.zen";
 
         assert_eq!(
             resolve_package_reference(legacy, |candidate| {
