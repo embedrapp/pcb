@@ -235,6 +235,13 @@ fn standalone_import_links_schematic_without_creating_a_pcb_or_archive() {
     );
     assert_repeated_schematic_apply(&mut sandbox, "out/layout.zen", &["-S", "bom"]);
 
+    let generated_board =
+        fs::read_to_string(output.join("layout.zen")).expect("read generated standalone board");
+    assert!(generated_board.contains("Board(\n"));
+    assert!(generated_board.contains("\"BoardConfig\""));
+    assert!(!generated_board.contains("\"Board\""));
+    assert!(!generated_board.contains("load(\"@stdlib/interfaces.zen\""));
+
     assert_eq!(
         extraction_report(&stderr).canonicalize().unwrap(),
         output
