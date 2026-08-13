@@ -376,12 +376,11 @@ impl LspEvalContext {
             .inspect_mut(|schematic| self.hydrate_schematic(path_buf, schematic));
 
         Ok(ZenerEvaluateResponse {
-            success: schematic_result.is_success(),
+            success: schematic_result.output.is_some(),
             parameters,
             schematic: schematic_result
                 .output
                 .as_ref()
-                .filter(|_| schematic_result.is_success())
                 .and_then(|schematic| serde_json::to_value(schematic).ok()),
             diagnostics: schematic_result
                 .diagnostics
@@ -1679,6 +1678,42 @@ mod tests {
             !result.diagnostics.is_empty(),
             "expected diagnostics when dependency falls back to disk"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_returns_schematic_with_bom_diagnostics() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().canonicalize()?;
+        let main_path = root.join("main.zen");
+        let main_contents = r#"signal = Net("SIGNAL")
+
+Component(
+    name = "R1",
+    footprint = "~",
+    pin_defs = {"1": "1"},
+    pins = {"1": signal},
+)
+"#;
+
+        fs::write(
+            root.join("pcb.toml"),
+            "[workspace]\npcb-version = \"0.4\"\n",
+        )?;
+        fs::write(&main_path, main_contents)?;
+
+        let response =
+            LspEvalContext::default().evaluate_with_inputs(&main_path, &HashMap::new())?;
+
+        assert!(response.success);
+        assert!(
+            response.schematic.is_some(),
+            "a structurally valid schematic must remain renderable"
+        );
+        assert!(response.diagnostics.iter().any(|diagnostic| {
+            diagnostic.level == "error" && diagnostic.message.contains("missing part information")
+        }));
 
         Ok(())
     }
