@@ -793,6 +793,57 @@ mod tests {
     }
 
     #[test]
+    fn imported_modules_use_prelude_net_constructors_without_explicit_loads() {
+        let mut io_nets = BTreeMap::new();
+        io_nets.insert("NC".to_string(), "NotConnected()".to_string());
+
+        let out = render_imported_sheet_module(
+            "TestModule",
+            &[ImportedIoNetDecl {
+                ident: "VCC".to_string(),
+                kind: ImportedNetKind::Power,
+            }],
+            &[ImportedNetDecl {
+                ident: "GND".to_string(),
+                name: "GND".to_string(),
+                kind: ImportedNetKind::Ground,
+            }],
+            &[],
+            &[ImportedInstanceCall {
+                module_ident: "Foo".to_string(),
+                refdes: "U1".to_string(),
+                dnp: false,
+                skip_bom: None,
+                skip_pos: None,
+                config_args: BTreeMap::new(),
+                io_nets,
+            }],
+        );
+
+        assert!(!out.contains("load(\"@stdlib/interfaces.zen\""));
+        assert!(out.contains("VCC = io(\"VCC\", Power)"));
+        assert!(out.contains("GND = Ground(\"GND\")"));
+        assert!(out.contains("NC = NotConnected()"));
+    }
+
+    #[test]
+    fn imported_boards_load_board_config_but_use_board_from_the_prelude() {
+        let out = render_imported_board(RenderImportedBoardArgs {
+            board_name: "Demo",
+            copper_layers: 2,
+            design_rules: None,
+            stackup: None,
+            net_decls: &[],
+            module_decls: &[],
+            instance_calls: &[],
+        });
+
+        assert!(out.contains("load(\"@stdlib/board_config.zen\", \"BoardConfig\")"));
+        assert!(!out.contains("\"Board\""));
+        assert!(out.contains("Board(\n"));
+    }
+
+    #[test]
     fn imported_board_renders_design_rules_when_present() {
         let design_rules = zen_stackup::DesignRules {
             constraints: Some(json!({
