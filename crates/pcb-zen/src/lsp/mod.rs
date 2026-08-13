@@ -437,10 +437,12 @@ impl LspEvalContext {
             .as_ref()
             .map(|output| output.signature.clone());
 
-        let schematic = eval_result
+        let (schematic, conversion_diagnostics) = eval_result
             .output
             .as_ref()
-            .and_then(|output| output.to_schematic().ok())
+            .map(|output| output.to_schematic_with_diagnostics().unpack())
+            .unwrap_or_default();
+        let schematic = schematic
             .map(|mut schematic| {
                 self.hydrate_schematic(path_buf, &mut schematic);
                 schematic
@@ -450,6 +452,7 @@ impl LspEvalContext {
         let diagnostics = eval_result
             .diagnostics
             .into_iter()
+            .chain(conversion_diagnostics)
             .map(|d| diagnostic_to_info(&d))
             .collect();
 
@@ -1663,6 +1666,42 @@ mod tests {
             !result.diagnostics.is_empty(),
             "expected diagnostics when dependency falls back to disk"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_returns_schematic_with_bom_diagnostics() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().canonicalize()?;
+        let main_path = root.join("main.zen");
+        let main_contents = r#"signal = Net("SIGNAL")
+
+Component(
+    name = "R1",
+    footprint = "~",
+    pin_defs = {"1": "1"},
+    pins = {"1": signal},
+)
+"#;
+
+        fs::write(
+            root.join("pcb.toml"),
+            "[workspace]\npcb-version = \"0.4\"\n",
+        )?;
+        fs::write(&main_path, main_contents)?;
+
+        let response =
+            LspEvalContext::default().evaluate_with_inputs(&main_path, &HashMap::new())?;
+
+        assert!(response.success);
+        assert!(
+            response.schematic.is_some(),
+            "a structurally valid schematic must remain renderable"
+        );
+        assert!(response.diagnostics.iter().any(|diagnostic| {
+            diagnostic.level == "error" && diagnostic.message.contains("missing part information")
+        }));
 
         Ok(())
     }
