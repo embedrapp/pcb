@@ -12,6 +12,10 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 - Synced the local-first Embedr CLI with upstream 0.4.26 while preserving offline runtime packaging, generic Git dependency resolution, and the removal of Diode-hosted service flows.
 
+### Fixed
+
+- KiCad imports now avoid redundant prelude loads, and LSP evaluation keeps structurally valid imported schematics renderable while reporting incomplete BOM sourcing diagnostics.
+
 ## [0.4.26] - 2026-08-08
 
 ### Fixed
