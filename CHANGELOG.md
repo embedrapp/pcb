@@ -8,6 +8,10 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- The `pcbc` nightly release workflow now uses GitHub-hosted runners so scheduled releases do not wait indefinitely for an unavailable runner pool.
+
 ## [0.4.26] - 2026-08-08
 
 ### Fixed
