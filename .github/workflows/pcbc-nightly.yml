@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   prepare:
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       should_build: ${{ steps.nightly.outputs.should_build }}
       sha: ${{ steps.nightly.outputs.sha }}
@@ -88,17 +88,17 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            runner: blacksmith-6vcpu-macos-15
+            runner: macos-15
           - target: aarch64-unknown-linux-gnu
-            runner: blacksmith-16vcpu-ubuntu-2404-arm
+            runner: ubuntu-24.04-arm
           - target: aarch64-unknown-linux-musl
-            runner: blacksmith-16vcpu-ubuntu-2404-arm
+            runner: ubuntu-24.04-arm
           - target: x86_64-unknown-linux-gnu
-            runner: blacksmith-16vcpu-ubuntu-2404
+            runner: ubuntu-24.04
           - target: x86_64-unknown-linux-musl
-            runner: blacksmith-16vcpu-ubuntu-2404
+            runner: ubuntu-24.04
           - target: x86_64-pc-windows-msvc
-            runner: blacksmith-16vcpu-windows-2025
+            runner: windows-2025
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Enable Windows long paths
@@ -170,7 +170,7 @@ jobs:
       - prepare
       - build
     if: needs.prepare.outputs.should_build == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v8
