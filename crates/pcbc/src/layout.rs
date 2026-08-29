@@ -163,20 +163,7 @@ pub(crate) fn prepare_design(args: &LayoutArgs) -> Result<PreparedDesign> {
     let zen_path = &args.file;
     let file_name = zen_path.file_name().unwrap().to_string_lossy().to_string();
 
-    let bom_match_mode = if args.offline {
-        pcb_diode_api::BomMatchMode::Offline
-    } else {
-        pcb_diode_api::BomMatchMode::Online
-    };
-    let eval_state = BuildEvalState::new(resolution_result);
-    // DFM never reads hydrated part data (it checks copper geometry and net
-    // attribution), so it skips the BOM-match round trip entirely.
-    let eval_state = if args.skip_bom_hydration {
-        eval_state
-    } else {
-        eval_state.with_bom_hydration(bom_match_mode)
-    };
-    let build_result = eval_state.build(
+    let build_result = BuildEvalState::new(resolution_result).build(
         zen_path,
         config_inputs,
         create_diagnostics_passes(&args.suppress, &[]),
