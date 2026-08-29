@@ -10,7 +10,7 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ### Changed
 
-- Synced the local-first Embedr CLI with upstream 0.4.26 while preserving offline runtime packaging, generic Git dependency resolution, and the removal of Diode-hosted service flows.
+- Synced the local-first Embedr CLI with upstream 0.4.40 while preserving offline runtime packaging, generic Git dependency resolution, and the removal of Diode-hosted service flows.
 
 ### Fixed
 
