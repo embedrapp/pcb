@@ -40,7 +40,6 @@ mod new;
 mod open;
 #[path = "mod/mod.rs"]
 mod pcb_mod;
-mod route;
 mod sim;
 mod test;
 mod update;
@@ -138,7 +137,6 @@ enum Commands {
     Open(open::OpenArgs),
 
     /// Vendor external dependencies
-    #[command(hide = true)]
     Vendor(vendor::VendorArgs),
 
     /// Reserved subcommand for future use

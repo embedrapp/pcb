@@ -70,23 +70,11 @@ pub struct NewPackageArgs {
     pub path: String,
 }
 
-#[derive(Args, Debug, Default)]
+#[derive(Args, Debug)]
 pub struct NewComponentArgs {
     /// Local component directory to import (unavailable in this fork)
-    #[arg(value_name = "DIR", conflicts_with = "component_id")]
-    pub dir: Option<PathBuf>,
-
-    /// Download and add a searched component (unavailable in this fork)
-    #[arg(long, value_name = "ID")]
-    pub component_id: Option<String>,
-
-    /// Deprecated: fallback MPN for --component-id
-    #[arg(long, value_name = "MPN", requires = "component_id")]
-    pub part_number: Option<String>,
-
-    /// Deprecated: manufacturer override for --component-id
-    #[arg(long, value_name = "MFR", requires = "component_id")]
-    pub manufacturer: Option<String>,
+    #[arg(value_name = "DIR")]
+    pub dir: PathBuf,
 }
 
 /// Validate a name for use as a directory/git repo name.
@@ -244,11 +232,7 @@ fn require_workspace() -> Result<(std::path::PathBuf, PcbToml)> {
     get_workspace().ok_or_else(|| anyhow::anyhow!("Not inside a pcb workspace"))
 }
 
-fn execute_new_component(args: NewComponentArgs) -> Result<()> {
-    if args.dir.is_some() || args.component_id.is_some() {
-        bail!("`pcb new component` is unavailable in the local Embedr pcb fork.");
-    }
-
+fn execute_new_component(_args: NewComponentArgs) -> Result<()> {
     bail!("`pcb new component` is unavailable in the local Embedr pcb fork.")
 }
 
@@ -262,7 +246,9 @@ fn execute_interactive() -> Result<()> {
 
         match selection {
             "package" => prompt_new_package(),
-            "component" => execute_new_component(NewComponentArgs::default()),
+            "component" => {
+                bail!("`pcb new component` is unavailable in the local Embedr pcb fork.")
+            }
             _ => unreachable!(),
         }
     } else {
