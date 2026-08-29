@@ -65,7 +65,7 @@ jobs:
           test -f package/lib/std/pcb.toml
           package/pcb build --offline test-workspaces/with-pcb-toml/boards/WorkspaceTestBoard.zen
           tar -C package -cJf dist/pcb-x86_64-unknown-linux-gnu.tar.xz pcb lib
-          sha256sum dist/pcb-x86_64-unknown-linux-gnu.tar.xz > dist/pcb-x86_64-unknown-linux-gnu.tar.xz.sha256
+          (cd dist && sha256sum pcb-x86_64-unknown-linux-gnu.tar.xz > pcb-x86_64-unknown-linux-gnu.tar.xz.sha256)
 
       - name: Stage macOS artifact
         if: matrix.name == 'macos-universal'
@@ -79,7 +79,7 @@ jobs:
           test -f package/lib/std/pcb.toml
           package/pcb build --offline test-workspaces/with-pcb-toml/boards/WorkspaceTestBoard.zen
           (cd package && zip -qr ../dist/pcb-macos-universal.zip pcb lib)
-          shasum -a 256 dist/pcb-macos-universal.zip > dist/pcb-macos-universal.zip.sha256
+          (cd dist && shasum -a 256 pcb-macos-universal.zip > pcb-macos-universal.zip.sha256)
 
       - name: Stage Windows artifact
         if: matrix.name == 'windows-x64'
