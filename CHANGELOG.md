@@ -14,6 +14,8 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Made the Linux and macOS release checksum files directly verifiable beside their downloaded archives.
+
 - KiCad imports now avoid redundant prelude loads, and LSP evaluation keeps structurally valid imported schematics renderable while reporting incomplete BOM sourcing diagnostics.
 
 ## [0.4.40] - 2026-08-28
