@@ -1,6 +1,4 @@
 mod apply;
-mod auth_git;
-mod bom;
 mod build;
 mod dfm;
 mod doc;
@@ -13,10 +11,8 @@ mod moved;
 mod netlist;
 mod part;
 mod path;
-mod release;
 mod schematic_apply_common;
 mod schematic_apply_flow;
 mod simple;
 mod sync;
-mod tag;
 mod test_bench;

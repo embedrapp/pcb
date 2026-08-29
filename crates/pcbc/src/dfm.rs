@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Args;
@@ -38,7 +38,7 @@ pub fn execute(args: DfmArgs) -> Result<()> {
 
     let temporary_dir = tempfile::tempdir().context("failed to create temporary DFM directory")?;
     let ipc_path = temporary_dir.path().join("ipc2581.xml");
-    crate::release::export_ipc2581(pcb_file, &ipc_path)?;
+    export_ipc2581(pcb_file, &ipc_path)?;
 
     commands::dfm::execute_check(
         &ipc_path,
@@ -49,4 +49,22 @@ pub fn execute(args: DfmArgs) -> Result<()> {
             layout_target: LayoutTarget::Board,
         },
     )
+}
+
+fn export_ipc2581(kicad_pcb_path: &Path, ipc2581_path: &Path) -> Result<()> {
+    pcb_kicad::KiCadCliBuilder::new()
+        .command("pcb")
+        .subcommand("export")
+        .subcommand("ipc2581")
+        .arg("--output")
+        .arg(ipc2581_path.to_string_lossy())
+        .arg("--bom-col-int-id")
+        .arg("Path")
+        .arg("--bom-col-mfg-pn")
+        .arg("Mpn")
+        .arg("--bom-col-mfg")
+        .arg("Manufacturer")
+        .arg(kicad_pcb_path.to_string_lossy())
+        .run()
+        .context("Failed to generate IPC-2581 file")
 }

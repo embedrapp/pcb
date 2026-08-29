@@ -122,11 +122,6 @@ pub fn execute(args: ApplyArgs) -> Result<()> {
                 .file
                 .context("pcb apply requires FILE, `schematic FILE`, or `layout FILE`")?;
             let layout_args = args.shared.layout_args(file, args.check);
-            if crate::sandbox_uri::parse_sandbox_file_arg(&layout_args.file)?.is_some() {
-                anyhow::bail!(
-                    "pcb apply cannot update a remote schematic; use `pcb apply layout` for a remote sandbox"
-                );
-            }
             let design = layout::prepare_design(&layout_args)?;
             let schematic = apply_linked_schematic(&design.schematic)?;
             let layout = layout::apply_prepared(&layout_args, design)?;
