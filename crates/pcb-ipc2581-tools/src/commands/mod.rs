@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 
 pub mod board_array;
 pub mod board_array_auto;
+pub mod bom;
 #[cfg(feature = "cli")]
 pub mod bom_edit;
 pub mod cpl;
