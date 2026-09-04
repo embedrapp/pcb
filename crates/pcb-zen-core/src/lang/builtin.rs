@@ -198,6 +198,8 @@ fn builtin_methods(methods: &mut MethodsBuilder) {
             String,
         >,
         #[starlark(require = named, default = NoneOr::None)] datasheet: NoneOr<String>,
+        #[starlark(require = named, default = NoneOr::None)] supplier: NoneOr<String>,
+        #[starlark(require = named, default = NoneOr::None)] supplier_part_number: NoneOr<String>,
     ) -> starlark::Result<PartValue> {
         if mpn.trim().is_empty() {
             return Err(Error::new_other(anyhow::anyhow!(
@@ -220,12 +222,33 @@ fn builtin_methods(methods: &mut MethodsBuilder) {
                 Some(datasheet)
             }
         };
-        Ok(PartValue::new(
-            mpn,
-            manufacturer,
-            qualifications.items,
-            datasheet,
-        ))
+        let supplier = match supplier {
+            NoneOr::None => None,
+            NoneOr::Other(value) if value.trim().is_empty() => {
+                return Err(Error::new_other(anyhow::anyhow!(
+                    "`supplier` must be non-empty when provided"
+                )));
+            }
+            NoneOr::Other(value) => Some(value),
+        };
+        let supplier_part_number = match supplier_part_number {
+            NoneOr::None => None,
+            NoneOr::Other(value) if value.trim().is_empty() => {
+                return Err(Error::new_other(anyhow::anyhow!(
+                    "`supplier_part_number` must be non-empty when provided"
+                )));
+            }
+            NoneOr::Other(value) => Some(value),
+        };
+        if supplier.is_some() != supplier_part_number.is_some() {
+            return Err(Error::new_other(anyhow::anyhow!(
+                "`supplier` and `supplier_part_number` must be provided together"
+            )));
+        }
+        Ok(
+            PartValue::new(mpn, manufacturer, qualifications.items, datasheet)
+                .with_supplier(supplier, supplier_part_number),
+        )
     }
 
     fn add_electrical_check<'v>(

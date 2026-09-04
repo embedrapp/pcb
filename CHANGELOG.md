@@ -8,6 +8,10 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- Added optional paired `supplier` and `supplier_part_number` fields to `Part`, with manifest and evaluation serialization for supplier-aware BOM exports.
+
 ### Changed
 
 - Synced the local-first Embedr CLI with upstream 0.4.40 while preserving offline runtime packaging, generic Git dependency resolution, and the removal of Diode-hosted service flows.

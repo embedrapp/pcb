@@ -20,6 +20,8 @@ pub struct PartValue {
     manufacturer: String,
     qualifications: Vec<String>,
     datasheet: Option<String>,
+    supplier: Option<String>,
+    supplier_part_number: Option<String>,
 }
 
 impl PartValue {
@@ -34,7 +36,19 @@ impl PartValue {
             manufacturer,
             qualifications,
             datasheet,
+            supplier: None,
+            supplier_part_number: None,
         }
+    }
+
+    pub fn with_supplier(
+        mut self,
+        supplier: Option<String>,
+        supplier_part_number: Option<String>,
+    ) -> Self {
+        self.supplier = supplier;
+        self.supplier_part_number = supplier_part_number;
+        self
     }
 
     pub fn mpn(&self) -> &str {
@@ -51,6 +65,14 @@ impl PartValue {
 
     pub fn datasheet(&self) -> Option<&str> {
         self.datasheet.as_deref()
+    }
+
+    pub fn supplier(&self) -> Option<&str> {
+        self.supplier.as_deref()
+    }
+
+    pub fn supplier_part_number(&self) -> Option<&str> {
+        self.supplier_part_number.as_deref()
     }
 
     pub fn to_json_value(&self) -> JsonValue {
@@ -77,6 +99,15 @@ impl PartValue {
                 JsonValue::String(datasheet.clone()),
             );
         }
+        if let Some(supplier) = &self.supplier {
+            object.insert("supplier".to_string(), JsonValue::String(supplier.clone()));
+        }
+        if let Some(number) = &self.supplier_part_number {
+            object.insert(
+                "supplier_part_number".to_string(),
+                JsonValue::String(number.clone()),
+            );
+        }
         JsonValue::Object(object)
     }
 }
@@ -89,6 +120,7 @@ impl From<ManifestPart> for PartValue {
             part.qualifications,
             part.datasheet,
         )
+        .with_supplier(part.supplier, part.supplier_part_number)
     }
 }
 
@@ -122,6 +154,16 @@ where
                         .collect::<Vec<_>>(),
                 )),
             ),
+            "supplier" => Some(
+                self.supplier()
+                    .map(|value| heap.alloc_str(value).to_value())
+                    .unwrap_or_else(Value::new_none),
+            ),
+            "supplier_part_number" => Some(
+                self.supplier_part_number()
+                    .map(|value| heap.alloc_str(value).to_value())
+                    .unwrap_or_else(Value::new_none),
+            ),
             _ => None,
         }
     }
@@ -129,7 +171,12 @@ where
     fn has_attr(&self, attr: &str, _heap: Heap<'v>) -> bool {
         matches!(
             attr,
-            "mpn" | "manufacturer" | "qualifications" | "datasheet"
+            "mpn"
+                | "manufacturer"
+                | "qualifications"
+                | "datasheet"
+                | "supplier"
+                | "supplier_part_number"
         )
     }
 
@@ -139,6 +186,25 @@ where
             "manufacturer".to_string(),
             "qualifications".to_string(),
             "datasheet".to_string(),
+            "supplier".to_string(),
+            "supplier_part_number".to_string(),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PartValue;
+
+    #[test]
+    fn supplier_identity_is_optional_and_serialized_when_configured() {
+        let legacy = PartValue::new("MPN-1".into(), "Maker".into(), vec![], None);
+        assert!(legacy.to_json_value().get("supplier").is_none());
+
+        let sourced = legacy.with_supplier(Some("LCSC".into()), Some("C12345".into()));
+        assert_eq!(sourced.supplier(), Some("LCSC"));
+        assert_eq!(sourced.supplier_part_number(), Some("C12345"));
+        assert_eq!(sourced.to_json_value()["supplier"], "LCSC");
+        assert_eq!(sourced.to_json_value()["supplier_part_number"], "C12345");
     }
 }

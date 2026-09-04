@@ -464,6 +464,12 @@ pub struct ManifestPart {
     /// Optional datasheet URL or path for this part.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub datasheet: Option<String>,
+    /// Optional distributor/supplier name for assembly sourcing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supplier: Option<String>,
+    /// Optional supplier catalog number paired with `supplier`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supplier_part_number: Option<String>,
 }
 
 /// Extract inline pcb.toml manifest from .zen file content

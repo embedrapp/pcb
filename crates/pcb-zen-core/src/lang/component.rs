@@ -1290,12 +1290,18 @@ impl<'v> StarlarkValue<'v> for ComponentValue<'v> {
                 let mpn = value
                     .unpack_str()
                     .ok_or_else(|| starlark::Error::new_other(anyhow!("`mpn` must be a string")))?;
-                data.part = Some(PartValue::new(
-                    mpn.to_owned(),
-                    existing.manufacturer().to_owned(),
-                    existing.qualifications().to_vec(),
-                    existing.datasheet().map(ToOwned::to_owned),
-                ));
+                data.part = Some(
+                    PartValue::new(
+                        mpn.to_owned(),
+                        existing.manufacturer().to_owned(),
+                        existing.qualifications().to_vec(),
+                        existing.datasheet().map(ToOwned::to_owned),
+                    )
+                    .with_supplier(
+                        existing.supplier().map(ToOwned::to_owned),
+                        existing.supplier_part_number().map(ToOwned::to_owned),
+                    ),
+                );
                 Ok(())
             }
             "manufacturer" => {
@@ -1307,12 +1313,18 @@ impl<'v> StarlarkValue<'v> for ComponentValue<'v> {
                 let manufacturer = value.unpack_str().ok_or_else(|| {
                     starlark::Error::new_other(anyhow!("`manufacturer` must be a string"))
                 })?;
-                data.part = Some(PartValue::new(
-                    existing.mpn().to_owned(),
-                    manufacturer.to_owned(),
-                    existing.qualifications().to_vec(),
-                    existing.datasheet().map(ToOwned::to_owned),
-                ));
+                data.part = Some(
+                    PartValue::new(
+                        existing.mpn().to_owned(),
+                        manufacturer.to_owned(),
+                        existing.qualifications().to_vec(),
+                        existing.datasheet().map(ToOwned::to_owned),
+                    )
+                    .with_supplier(
+                        existing.supplier().map(ToOwned::to_owned),
+                        existing.supplier_part_number().map(ToOwned::to_owned),
+                    ),
+                );
                 Ok(())
             }
             "part" => {
@@ -2397,6 +2409,8 @@ mod tests {
                 manufacturer: "ManifestCorp".to_string(),
                 qualifications: vec!["Q2".to_string()],
                 datasheet: None,
+                supplier: None,
+                supplier_part_number: None,
             },
             ManifestPart {
                 mpn: "MANIFEST-ALT".to_string(),
@@ -2405,6 +2419,8 @@ mod tests {
                 manufacturer: "AltCorp".to_string(),
                 qualifications: vec!["Q3".to_string()],
                 datasheet: None,
+                supplier: None,
+                supplier_part_number: None,
             },
         ];
 
@@ -2507,6 +2523,8 @@ mod tests {
                 manufacturer: "ManifestCorp".to_string(),
                 qualifications: vec!["Q1".to_string()],
                 datasheet: None,
+                supplier: None,
+                supplier_part_number: None,
             },
             ManifestPart {
                 mpn: "MANIFEST-ALT".to_string(),
@@ -2515,6 +2533,8 @@ mod tests {
                 manufacturer: "AltCorp".to_string(),
                 qualifications: vec!["Q2".to_string()],
                 datasheet: None,
+                supplier: None,
+                supplier_part_number: None,
             },
         ];
 
