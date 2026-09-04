@@ -13,6 +13,12 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 - Synced the local-first Embedr CLI with upstream 0.4.48 while preserving offline runtime packaging, generic Git dependency resolution, and the removal of Diode-hosted service flows.
 - Preserved upstream's portable IPC-2581 BOM extraction for WASM exports without restoring hosted availability lookups or authentication.
 
+### Fixed
+
+- Shortened the Windows release build's Cargo checkout path and enabled Git long-path support for large upstream dependencies.
+- Made the Linux and macOS release checksum files directly verifiable beside their downloaded archives.
+- KiCad imports now avoid redundant prelude loads, and LSP evaluation keeps structurally valid imported schematics renderable while reporting incomplete BOM sourcing diagnostics.
+
 ## [0.4.48] - 2026-09-04
 
 ### Added
@@ -101,14 +107,6 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 - Keep IPC-2581 `DOCUMENT` BOM entries out of CPL exports.
 - Prevent sub-resolution boundary backtracking from producing false DFM width findings.
-
-### Fixed
-
-- Shortened the Windows release build's Cargo checkout path and enabled Git long-path support for large upstream dependencies.
-
-- Made the Linux and macOS release checksum files directly verifiable beside their downloaded archives.
-
-- KiCad imports now avoid redundant prelude loads, and LSP evaluation keeps structurally valid imported schematics renderable while reporting incomplete BOM sourcing diagnostics.
 
 ## [0.4.42] - 2026-09-01
 
