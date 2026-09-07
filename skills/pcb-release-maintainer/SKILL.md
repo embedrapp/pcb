@@ -32,8 +32,27 @@ Use a disposable worktree or otherwise isolate the scheduled run from the shared
 1. Start from the current `origin/embedr/release` branch and rebase it onto the chosen stable upstream tag. A major conflict or upstream structural change is a reason to stop and report, not to guess.
 2. Reconcile conflicts by keeping upstream compiler, runtime, layout, stdlib, and local tooling improvements while preserving every constraint in `FORK.md`.
 3. Set the workspace version to `<upstream-version>-embedr.1` for the first release based on that upstream tag, or increment the downstream suffix only when an explicit follow-up release is justified. Update `Cargo.lock` consistently.
-4. Update the downstream workflow release notes so they identify the selected upstream version without claiming to be an official Diode release.
+4. Prepare GitHub Release notes from the actual diff between the previous published `embedr-v*` tag and the new `embedr-v*` tag.
 5. Add one succinct `CHANGELOG.md` entry under `Unreleased` describing the upstream sync when the repository convention requires it.
+
+## Write product release notes
+
+Release notes are a user-facing changelog for the Embedr PCB builds. Compare the previous
+published downstream tag directly with the current downstream tag, and describe only behavior
+that users gain, lose, or can observe in that fork-to-fork range.
+
+- Lead with `What's changed since pcb <previous-version>` and group concise bullets by product area.
+- Include new commands, capabilities, supported formats, output changes, bug fixes, and meaningful
+  performance or correctness improvements that are present and usable in the downstream build.
+- Inspect the downstream tag diff. Do not copy changes merely because they appear in another
+  project's release notes; exclude anything removed, disabled, or unreachable in this fork.
+- Do not mention upstream syncing, rebases, merge conflicts, fork policy, excluded services,
+  workflows, CI, validation steps, packaging mechanics, checksums, artifact inventories,
+  operational instructions, or other release-process metadata.
+- Do not use the full accumulated changelog or compare against an upstream tag. Each release body
+  covers exactly the previous published downstream release through the current downstream release.
+- The workflow-created release body is only a placeholder. After publication, replace it with the
+  curated product notes before reporting the release complete.
 
 ## Validate and publish
 
@@ -53,7 +72,8 @@ If validation passes:
 2. Re-fetch `origin` and use `--force-with-lease` only when the rebased downstream branch requires it.
 3. Create one annotated or lightweight tag named `embedr-v<upstream-version>.1`, after confirming it does not exist locally or on GitHub.
 4. Push only `embedr/release` and that tag to `origin`. The tag starts the `Downstream Release` GitHub Actions workflow.
-5. Monitor the matching workflow to completion. Confirm the GitHub Release exists and contains Linux x64, macOS universal, Windows x64, per-artifact checksum files, and `SHA256SUMS.txt` before reporting success.
+5. Monitor the matching workflow to completion. Confirm the GitHub Release exists and contains Linux x64, macOS universal, Windows x64, per-artifact checksum files, and `SHA256SUMS.txt`.
+6. Replace the placeholder GitHub Release body with the curated fork-to-fork product notes described above before reporting success.
 
 Do not manually upload binaries, invoke upstream release workflows, publish to Diode S3, or claim success while GitHub Actions is queued or running. On failure, preserve the run URL and concise error evidence; do not retag or retry more than once without a new diagnosis.
 
