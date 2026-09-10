@@ -10,7 +10,7 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ### Changed
 
-- Synced the local-first Embedr CLI with upstream 0.4.51 while preserving offline runtime packaging, generic Git dependency resolution, and the removal of Diode-hosted service flows.
+- Synced the local-first Embedr CLI with upstream 0.4.52, including geometry accuracy, compiler/runtime, layout, and standard-library improvements, while preserving offline runtime packaging, generic Git dependency resolution, Windows cache behavior, and the removal of Diode-hosted service flows.
 - Preserved upstream's portable IPC-2581 BOM extraction for WASM exports without restoring hosted availability lookups or authentication.
 
 ### Fixed
