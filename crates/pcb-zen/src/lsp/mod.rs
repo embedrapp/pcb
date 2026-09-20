@@ -2053,8 +2053,7 @@ Component(
         )?;
         fs::write(&main_path, main_contents)?;
 
-        let response =
-            LspEvalContext::default().evaluate_with_inputs(&main_path, &HashMap::new())?;
+        let response = LspEvalContext::default().evaluate_with_inputs(&main_path, &HashMap::new());
 
         assert!(response.success);
         assert!(
