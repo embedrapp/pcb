@@ -49,14 +49,6 @@ pub struct LayoutArgs {
     /// Output format
     #[arg(short = 'f', long, value_enum, default_value_t = LayoutOutputFormat::Human)]
     pub format: LayoutOutputFormat,
-
-    /// Skip BOM hydration (MPN matching) when building the schematic.
-    ///
-    /// DFM checks copper geometry and net attribution, neither of which uses
-    /// hydrated part data, so `pcb dfm` sets this to avoid the BOM-match
-    /// network round trip. Internal only; not a CLI flag.
-    #[arg(skip)]
-    pub(crate) skip_bom_hydration: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]

@@ -8,6 +8,17 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- Synced the local-first Embedr CLI with upstream 0.4.56, including compiler/runtime, layout identity preservation, Gerber/IPC-2581 export, DFM, STEP rendering, LSP, and standard-library improvements, while preserving offline runtime packaging, generic Git dependency resolution, Windows cache behavior, and the removal of Diode-hosted service flows.
+- Preserved upstream's portable IPC-2581 BOM extraction for WASM exports without restoring hosted availability lookups or authentication.
+
+### Fixed
+
+- Shortened the Windows release build's Cargo checkout path and enabled Git long-path support for large upstream dependencies.
+- Made the Linux and macOS release checksum files directly verifiable beside their downloaded archives.
+- KiCad imports avoid redundant prelude loads, and LSP evaluation keeps structurally valid imported schematics renderable while reporting incomplete BOM sourcing diagnostics.
+
 ## [0.4.56] - 2026-09-20
 
 ### Fixed
@@ -54,17 +65,6 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 - Stop PCB LSP evaluation memory growth and release evaluation caches between requests.
 - Preserve finished-board material when routing array clearance around plated edge pads.
 - Keep the exact round caps and thick arcs of thin strokes in STEP silkscreen and copper.
-
-### Changed
-
-- Synced the local-first Embedr CLI with upstream 0.4.53, including compiler/runtime, schematic repair, IPC-2581, STEP export, layout, and standard-library improvements, while preserving offline runtime packaging, generic Git dependency resolution, Windows cache behavior, and the removal of Diode-hosted service flows.
-- Preserved upstream's portable IPC-2581 BOM extraction for WASM exports without restoring hosted availability lookups or authentication.
-
-### Fixed
-
-- Shortened the Windows release build's Cargo checkout path and enabled Git long-path support for large upstream dependencies.
-- Made the Linux and macOS release checksum files directly verifiable beside their downloaded archives.
-- KiCad imports avoid redundant prelude loads, and LSP evaluation keeps structurally valid imported schematics renderable while reporting incomplete BOM sourcing diagnostics.
 
 ## [0.4.53] - 2026-09-14
 
