@@ -8,6 +8,14 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- Synced the local-first Embedr CLI with upstream 0.4.58, including the IPC-2581 parser, editing, DFM, rendering, Gerber export, board-array, and four-layer interposer improvements, while preserving offline runtime packaging, generic Git dependency resolution, Windows cache behavior, and the removal of Diode-hosted service flows.
+
+### Fixed
+
+- Preserved the fork's local-only command surface while incorporating upstream IPC-2581 fixes for negative planes, inline pads, donuts, thermals, arcs, trailers, slots, fiducials, and board-array tooling.
+
 ## [0.4.58] - 2026-09-22
 
 ### Fixed
