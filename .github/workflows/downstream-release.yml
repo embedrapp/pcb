@@ -107,6 +107,7 @@ jobs:
         with:
           name: pcb-${{ matrix.name }}
           path: dist/*
+          retention-days: 7
 
   publish:
     name: publish-release
