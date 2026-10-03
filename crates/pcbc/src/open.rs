@@ -36,7 +36,7 @@ pub fn execute(args: OpenArgs) -> Result<()> {
         return open_pcb_file(&args.file);
     }
 
-    if crate::sandbox_uri::is_kicad_sch_path(&args.file) {
+    if is_kicad_sch_path(&args.file) {
         return pcb_kicad::open_eeschema(&args.file);
     }
 
@@ -171,9 +171,17 @@ impl DfmBridge {
 }
 
 fn is_kicad_pcb_path(path: &Path) -> bool {
+    has_extension(path, "kicad_pcb")
+}
+
+fn is_kicad_sch_path(path: &Path) -> bool {
+    has_extension(path, "kicad_sch")
+}
+
+fn has_extension(path: &Path, expected: &str) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("kicad_pcb"))
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
 }
 
 fn open_pcb_file(path: &Path) -> Result<()> {
