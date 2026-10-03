@@ -21,6 +21,7 @@ mod changelog;
 mod codegen;
 mod config_input;
 mod dfm;
+mod doc;
 mod drc;
 mod embed_step;
 mod file_walker;
@@ -118,6 +119,9 @@ enum Commands {
 
     /// Import a KiCad schematic or project into a Zener board repository
     Import(import::ImportArgs),
+
+    /// Generate documentation for a Zener package
+    Doc(doc::DocArgs),
 
     /// Print the pcb changelog
     #[command(hide = true)]
@@ -218,6 +222,7 @@ fn run() -> anyhow::Result<()> {
         Commands::Update(args) => update::execute(args),
         Commands::Info(args) => info::execute(args),
         Commands::Import(args) => import::execute(args),
+        Commands::Doc(args) => doc::execute(args),
         Commands::Changelog(args) => changelog::execute(args),
         Commands::Layout(args) => layout::execute(args),
         Commands::Dfm(args) => dfm::execute(args),

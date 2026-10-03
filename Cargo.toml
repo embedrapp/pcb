@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.4.67"
+version = "0.4.67-embedr.1"
 edition = "2024"
 repository = "https://github.com/embedrapp/pcb"
 homepage = "https://github.com/embedrapp/pcb"
@@ -42,6 +42,7 @@ pcb-kicad-sch = { path = "crates/pcb-kicad-sch" }
 pcb-sexpr = { path = "crates/pcb-sexpr", features = ["serde"] }
 pcb-starlark-lsp = { path = "crates/pcb-starlark-lsp" }
 pcb-fmt = { path = "crates/pcb-fmt" }
+pcb-docgen = { path = "crates/pcb-docgen" }
 pcb-test-utils = { path = "crates/pcb-test-utils" }
 pcb-sim = { path = "crates/pcb-sim" }
 pcb-native-dialog = { path = "crates/pcb-native-dialog" }

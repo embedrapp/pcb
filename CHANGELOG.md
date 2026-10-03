@@ -8,6 +8,15 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- Synced the local-first Embedr CLI with upstream 0.4.67, including compiler, runtime, layout, IPC-2581, schematic, DFM, and standard-library improvements, while preserving packaged `lib/std`, generic Git dependency resolution, Windows cache junction fallback, and the removal of Diode-hosted service flows.
+- Kept the local `pcb doc` command available across upstream's package-inspection restructuring.
+
+### Fixed
+
+- Preserved the fork's local command surface and offline packaged-runtime smoke build while adopting upstream's toolchain stdlib linking and FreeRouting changes.
+
 ## [0.4.67] - 2026-10-02
 
 ### Added

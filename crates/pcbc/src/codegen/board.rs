@@ -818,7 +818,7 @@ mod tests {
 
         assert!(!out.contains("load(\"@stdlib/interfaces.zen\""));
         assert!(out.contains("VCC = io(\"VCC\", Power)"));
-        assert!(out.contains("GND = Ground(\"GND\")"));
+        assert!(out.contains("GND = Ground()"));
         assert!(out.contains("NC = NotConnected()"));
     }
 
