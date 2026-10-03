@@ -8,10 +8,5 @@ pub struct LspArgs {
 }
 
 pub fn execute(args: LspArgs) -> anyhow::Result<()> {
-    pcb_zen::lsp_with_custom_request_handler(
-        false,
-        args.offline,
-        |_method, _params| Ok(None),
-        |_source_path, _schematic| {},
-    )
+    pcb_zen::lsp_with_custom_request_handler(false, args.offline, |_method, _params| Ok(None))
 }
