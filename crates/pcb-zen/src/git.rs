@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::ffi::OsString;
 
 use anyhow::{Context, bail};
 use jiff::{
