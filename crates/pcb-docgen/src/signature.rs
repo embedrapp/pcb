@@ -2,6 +2,8 @@
 
 use crate::types::{ModuleSignature, ParamDoc};
 use pcb_zen_core::{lang::type_info::TypeInfo, resolution::ResolutionResult};
+use serde_json::Value as JsonValue;
+use starlark::collections::SmallMap;
 use std::path::Path;
 
 /// Result of trying to get a module signature.
@@ -19,8 +21,12 @@ pub enum SignatureResult {
 /// A file is considered a module if:
 /// - It has io() or config() parameters in its signature, OR
 /// - It instantiates components/submodules (module_tree has more than just the root)
-pub fn try_get_signature(file: &Path, resolution_result: &ResolutionResult) -> SignatureResult {
-    let result = pcb_zen::eval(file, resolution_result.clone(), Default::default());
+pub fn try_get_signature(
+    file: &Path,
+    resolution_result: &ResolutionResult,
+    inputs: &SmallMap<String, JsonValue>,
+) -> SignatureResult {
+    let result = pcb_zen::eval(file, resolution_result.clone(), inputs.clone());
 
     let Some(eval_output) = result.output else {
         let errors: Vec<String> = result
