@@ -393,6 +393,35 @@ Marker = "ok"
 }
 
 #[test]
+fn test_root_relative_child_import_without_repository_uses_child_identity() {
+    let mut sandbox = Sandbox::new();
+    sandbox
+        .write("pcb.toml", "[workspace]\npcb-version = \"0.4\"\n[board]\nname = \"Main\"\npath = \"boards/Main/Main.zen\"\n")
+        .write("boards/Main/Main.zen", "Child = Module(\"../../components/Child/Child.zen\")\nChild(name = \"X\", P1 = Net(\"SIGNAL\"))\n")
+        .write("components/Child/pcb.toml", "[dependencies]\n")
+        .write("components/Child/Child.zen", "load(\"../Helper/Helper.zen\", \"Marker\")\ncheck(Marker == \"ok\", \"loaded sibling helper\")\nP1 = io(Net)\n")
+        .write("components/Helper/pcb.toml", "[dependencies]\n")
+        .write("components/Helper/Helper.zen", "Marker = \"ok\"\n");
+
+    let before = run_pcbc_unchecked(&mut sandbox, ["build", "boards/Main/Main.zen"]);
+    assert!(!before.status.success());
+    assert!(command_output(&before).contains("Run `pcb sync`"));
+    sandbox.run("pcbc", ["sync"]).run().unwrap();
+    let after = run_pcbc_unchecked(&mut sandbox, ["build", "boards/Main/Main.zen"]);
+    assert!(after.status.success(), "{}", command_output(&after));
+    let root_manifest = read_root_manifest(&sandbox);
+    assert!(root_manifest.contains("\"components/Child\""));
+    assert!(!root_manifest.contains("repository"));
+    assert!(
+        read_sandbox_file(&sandbox, "components/Child/pcb.toml").contains("\"components/Helper\"")
+    );
+    assert!(
+        read_sandbox_file(&sandbox, "boards/Main/Main.zen")
+            .contains("../../components/Child/Child.zen")
+    );
+}
+
+#[test]
 fn test_same_package_url_rejected() {
     let mut sandbox = Sandbox::new();
 
