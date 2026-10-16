@@ -89,6 +89,12 @@ exclude = ["scratch/**", "experiments/old-board"]
 cache directories such as
 `.git`, `.pcb`, `vendor`, `target`, `node_modules`, and `fork`.
 
+Relative `Module(...)` and `load(...)` imports resolve from the importing file.
+When they cross a workspace package boundary, resolution uses the target's
+discovered package identity, including when `[workspace].repository` is absent.
+Run `pcb sync` after adding a cross-package import to record its dependency;
+the caller and target do not need to share a package URL prefix.
+
 ## Coexisting versions
 
 A build can contain incompatible families of one package, such as
