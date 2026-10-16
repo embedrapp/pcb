@@ -280,16 +280,14 @@ fn run_docgen_for_remote_package(
     filter: Option<&str>,
     inputs: &SmallMap<String, JsonValue>,
 ) -> Result<()> {
-    let cache_dir = dirs::home_dir()
-        .expect("Cannot determine home directory")
-        .join(".pcb/cache")
-        .join(module_path)
-        .join(version);
-
-    let package_root = pcb_zen::resolve::ensure_sparse_checkout(&cache_dir, module_path, version)
+    let version = Version::parse(version).context("Invalid package version")?;
+    let manifest = pcb_zen::resolve::ensure_package_manifest_in_cache(module_path, &version)
         .with_context(|| format!("Failed to fetch {module_path}@{version}"))?;
+    let package_root = manifest
+        .parent()
+        .context("Package manifest has no parent")?;
 
-    run_docgen(&package_root, Some(module_path), filter, inputs)
+    run_docgen(package_root, Some(module_path), filter, inputs)
 }
 
 /// Get the package URL for a local directory using workspace info
