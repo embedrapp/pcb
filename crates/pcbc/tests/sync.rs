@@ -422,6 +422,33 @@ fn test_root_relative_child_import_without_repository_uses_child_identity() {
 }
 
 #[test]
+fn test_cross_package_relative_import_preserves_filename_case_checks() {
+    for repository in ["", "repository = \"github.com/example/demo\"\n"] {
+        let mut sandbox = Sandbox::new();
+        sandbox
+            .write("pcb.toml", format!("[workspace]\npcb-version = \"0.4\"\n{repository}[board]\nname = \"Main\"\npath = \"boards/Main/Main.zen\"\n"))
+            .write("boards/Main/Main.zen", "Child = Module(\"../../components/Child/Child.zen\")\nChild(name = \"X\", P1 = Net(\"SIGNAL\"))\n")
+            .write("components/Child/pcb.toml", "[dependencies]\n")
+            .write("components/Child/Child.zen", "P1 = io(Net)\n")
+            .sync();
+        let wrong_case_exists = sandbox
+            .root_path()
+            .join("components/Child/child.zen")
+            .exists();
+        sandbox.write("boards/Main/Main.zen", "Child = Module(\"../../components/Child/child.zen\")\nChild(name = \"X\", P1 = Net(\"SIGNAL\"))\n");
+        let result = run_pcbc_unchecked(&mut sandbox, ["build", "boards/Main/Main.zen"]);
+        assert!(!result.status.success(), "{}", command_output(&result));
+        if wrong_case_exists {
+            assert!(
+                command_output(&result).contains("Case mismatch"),
+                "{}",
+                command_output(&result)
+            );
+        }
+    }
+}
+
+#[test]
 fn test_same_package_url_rejected() {
     let mut sandbox = Sandbox::new();
 
