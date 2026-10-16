@@ -14,6 +14,8 @@ mod types;
 
 use anyhow::{Context, Result};
 use pcb_zen_core::DefaultFileProvider;
+use serde_json::Value as JsonValue;
+use starlark::collections::SmallMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -31,11 +33,32 @@ pub fn generate_docs(
     display_path: Option<&str>,
     filter: Option<&str>,
 ) -> Result<DocsResult> {
+    generate_docs_with_inputs(
+        package_root,
+        package_url,
+        display_path,
+        filter,
+        &SmallMap::new(),
+    )
+}
+
+/// Generate documentation for one evaluated root configuration. Overrides are
+/// restricted to a single file, rather than applied to unrelated modules.
+pub fn generate_docs_with_inputs(
+    package_root: &Path,
+    package_url: Option<&str>,
+    display_path: Option<&str>,
+    filter: Option<&str>,
+    inputs: &SmallMap<String, JsonValue>,
+) -> Result<DocsResult> {
     // Canonicalize to ensure consistent path handling
     let package_root = package_root
         .canonicalize()
         .unwrap_or_else(|_| package_root.to_path_buf());
     let zen_files = collect_zen_files(&package_root, filter)?;
+    if !inputs.is_empty() && zen_files.len() != 1 {
+        anyhow::bail!("--config documentation requires a single .zen file target");
+    }
     let file_provider = DefaultFileProvider::new();
     let workspace_info =
         pcb_zen::get_workspace_info(&file_provider, &package_root).with_context(|| {
@@ -60,8 +83,13 @@ pub fn generate_docs(
 
         let file_path = get_file_path(&package_root, &path);
 
-        match signature::try_get_signature(&path, &resolution) {
+        match signature::try_get_signature(&path, &resolution, inputs) {
             signature::SignatureResult::Module(sig) => {
+                for name in inputs.keys() {
+                    if !sig.configs.iter().any(|param| &param.name == name) {
+                        anyhow::bail!("Unknown config parameter '{name}' in {file_path}");
+                    }
+                }
                 files.push(FileDoc::Module(ModuleDoc {
                     path: file_path,
                     file_doc: parser::extract_file_docstring(&content),
@@ -69,11 +97,19 @@ pub fn generate_docs(
                 }));
             }
             signature::SignatureResult::Library => {
+                if !inputs.is_empty() {
+                    anyhow::bail!("{file_path} has no root config parameters");
+                }
                 files.push(FileDoc::Library(parser::parse_library(
                     file_path, &content,
                 )?));
             }
             signature::SignatureResult::Error(e) => {
+                if !inputs.is_empty() {
+                    return Err(e).with_context(|| {
+                        format!("Failed to evaluate requested configuration for {file_path}")
+                    });
+                }
                 eprintln!("Warning: Failed to parse {}: {}", file_path, e);
             }
         }
@@ -84,7 +120,23 @@ pub fn generate_docs(
 
     let default_path = package_root.to_string_lossy();
     let local_path = display_path.unwrap_or(&default_path);
-    let markdown = render::render_docs(&files, package_url, Some(local_path));
+    let mut markdown = render::render_docs(&files, package_url, Some(local_path));
+    if files.iter().any(|file| matches!(file, FileDoc::Module(_))) {
+        let scope = if inputs.is_empty() {
+            "Module IO is evaluated with default config values. For a specific configuration, target one .zen file and repeat `--config KEY=VALUE`.".to_owned()
+        } else {
+            let overrides = inputs
+                .iter()
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Module IO is evaluated with these root config overrides: {}",
+                overrides.replace('`', "\\`").replace('\n', " ")
+            )
+        };
+        markdown = format!("{scope}\n\n{markdown}");
+    }
 
     let (library_count, module_count) = files.iter().fold((0, 0), |(l, m), f| match f {
         FileDoc::Library(_) => (l + 1, m),
@@ -150,4 +202,73 @@ pub struct DocsResult {
     pub markdown: String,
     pub library_count: usize,
     pub module_count: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("pcb.toml"), "[dependencies]\n").unwrap();
+        fs::write(
+            directory.path().join("hole.zen"),
+            r#"
+Net = builtin.net_type("Net")
+Mode = enum("plated", "mechanical")
+mode = config(Mode, default=Mode("plated"))
+P1 = builtin.io(Net, optional=True) if mode != Mode("mechanical") else None
+"#,
+        )
+        .unwrap();
+        directory
+    }
+
+    #[test]
+    fn io_docs_follow_the_evaluated_configuration() {
+        let directory = fixture();
+        let defaults = generate_docs(directory.path(), None, None, Some("hole.zen")).unwrap();
+        assert!(defaults.markdown.contains("| P1 | Net |  | yes |"));
+        assert!(defaults.markdown.contains("default config values"));
+        let inputs = SmallMap::from_iter([(
+            "mode".to_owned(),
+            JsonValue::String("mechanical".to_owned()),
+        )]);
+        let configured =
+            generate_docs_with_inputs(directory.path(), None, None, Some("hole.zen"), &inputs)
+                .unwrap();
+        assert!(!configured.markdown.contains("| P1 |"));
+        assert!(
+            configured
+                .markdown
+                .contains("**IO:** none in this configuration.")
+        );
+        assert!(configured.markdown.contains("mode=\"mechanical\""));
+    }
+
+    #[test]
+    fn configured_docs_reject_invalid_values_unknown_keys_and_multiple_files() {
+        let directory = fixture();
+        for (key, value) in [("mode", "invalid"), ("typo", "mechanical")] {
+            let inputs =
+                SmallMap::from_iter([(key.to_owned(), JsonValue::String(value.to_owned()))]);
+            assert!(
+                generate_docs_with_inputs(directory.path(), None, None, Some("hole.zen"), &inputs)
+                    .is_err()
+            );
+        }
+        fs::write(
+            directory.path().join("other.zen"),
+            "count = config(int, default=1)\n",
+        )
+        .unwrap();
+        let inputs = SmallMap::from_iter([(
+            "mode".to_owned(),
+            JsonValue::String("mechanical".to_owned()),
+        )]);
+        let error = generate_docs_with_inputs(directory.path(), None, None, None, &inputs)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("single .zen file"));
+    }
 }
