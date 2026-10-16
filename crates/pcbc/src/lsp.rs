@@ -2,7 +2,7 @@ use clap::Args;
 
 #[derive(Args)]
 pub struct LspArgs {
-    /// Disable network access; use vendored dependencies and cached BOM matches
+    /// Disable network access; use vendored dependencies and local caches
     #[arg(long = "offline")]
     pub offline: bool,
 }
