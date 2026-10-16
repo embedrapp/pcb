@@ -271,4 +271,19 @@ P1 = builtin.io(Net, optional=True) if mode != Mode("mechanical") else None
             .unwrap();
         assert!(error.to_string().contains("single .zen file"));
     }
+
+    #[test]
+    fn configured_child_errors_cannot_become_successful_partial_docs() {
+        let directory = fixture();
+        fs::write(directory.path().join("hole.zen"), "bad = config(bool, default=False)\nChild = Module(\"./child.zen\")\nChild(enabled=bad)\n").unwrap();
+        fs::write(directory.path().join("child.zen"), "enabled = config(bool, default=False)\nif enabled:\n    fail(\"Configured child failure\")\n").unwrap();
+        assert!(generate_docs(directory.path(), None, None, Some("hole.zen")).is_ok());
+        let inputs =
+            SmallMap::from_iter([("bad".to_owned(), JsonValue::String("true".to_owned()))]);
+        let error =
+            generate_docs_with_inputs(directory.path(), None, None, Some("hole.zen"), &inputs)
+                .err()
+                .expect("deferred child failure must reject configured docs");
+        assert!(format!("{error:#}").contains("Configured child failure"));
+    }
 }
