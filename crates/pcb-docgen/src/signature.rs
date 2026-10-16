@@ -28,18 +28,21 @@ pub fn try_get_signature(
 ) -> SignatureResult {
     let result = pcb_zen::eval(file, resolution_result.clone(), inputs.clone());
 
-    let Some(eval_output) = result.output else {
-        let errors: Vec<String> = result
-            .diagnostics
-            .diagnostics
-            .iter()
-            .map(|d| d.to_string())
-            .collect();
-        return SignatureResult::Error(anyhow::anyhow!(
-            "Evaluation failed for {}: {}",
-            file.display(),
-            errors.join("\n")
-        ));
+    let eval_output = match result.output {
+        Some(output) if !result.diagnostics.has_errors() => output,
+        _ => {
+            let errors: Vec<String> = result
+                .diagnostics
+                .diagnostics
+                .iter()
+                .map(|d| d.to_string())
+                .collect();
+            return SignatureResult::Error(anyhow::anyhow!(
+                "Evaluation failed for {}: {}",
+                file.display(),
+                errors.join("\n")
+            ));
+        }
     };
 
     // A file is a library if it has no signature AND doesn't instantiate anything.
