@@ -843,17 +843,40 @@ impl EvalContextConfig {
         }
 
         if crosses_package_boundary {
-            // Escaped package boundary — resolve via URL arithmetic
-            let current_url = self.file_url(&context.current_file)?;
-            let current_dir_url = current_url
-                .rsplit_once('/')
-                .map(|(dir, _)| dir)
-                .unwrap_or(&current_url);
-            let target_url = crate::normalize_url_path(&format!(
-                "{}/{}",
-                current_dir_url,
-                path.to_string_lossy().replace('\\', "/")
-            ))?;
+            let target_url = if self
+                .resolution
+                .workspace_package_url_for_path(self.file_provider(), &canonical_resolved)
+                .is_some()
+            {
+                // Local package identities need not share a URL prefix. In a
+                // repository-free workspace the root is `workspace`, while a
+                // child can be `components/Sensor`. Use the same owning-package
+                // index as stable file URIs, then enforce declared dependencies
+                // through the normal URL resolver below.
+                self.resolution
+                    .format_package_uri(&canonical_resolved)
+                    .and_then(|uri| {
+                        uri.strip_prefix(pcb_sch::PACKAGE_URI_PREFIX)
+                            .map(str::to_owned)
+                    })
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "Cannot determine package URL for '{}'",
+                            canonical_resolved.display()
+                        )
+                    })?
+            } else {
+                let current_url = self.file_url(&context.current_file)?;
+                let current_dir_url = current_url
+                    .rsplit_once('/')
+                    .map(|(dir, _)| dir)
+                    .unwrap_or(&current_url);
+                crate::normalize_url_path(&format!(
+                    "{}/{}",
+                    current_dir_url,
+                    path.to_string_lossy().replace('\\', "/")
+                ))?
+            };
 
             let new_spec = LoadSpec::Package {
                 package: target_url,

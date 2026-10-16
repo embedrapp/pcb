@@ -15,6 +15,7 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Relative imports across local packages use the discovered target package identity, including workspaces without a repository URL, while retaining dependency synchronization checks.
 - `pcb doc` reports optional IO and can evaluate one module with `--config` overrides, so mechanical mounting holes correctly show no electrical pins.
 - Preserved the fork's local command surface and offline packaged-runtime smoke build while adopting upstream's KiCad import, Gerber, schematic, and performance fixes.
 
