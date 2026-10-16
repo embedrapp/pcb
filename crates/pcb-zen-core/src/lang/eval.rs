@@ -814,6 +814,7 @@ impl EvalContextConfig {
 
         let canonical_resolved = context.file_provider.canonicalize(&resolved_path)?;
         let canonical_root = context.file_provider.canonicalize(&package_root)?;
+        crate::validate_path_case_with_canonical(&path, &canonical_resolved)?;
 
         // The load crosses a package boundary when the target is owned by a
         // different package than the current file — judged first by the frozen
@@ -885,8 +886,6 @@ impl EvalContextConfig {
             context.push_spec(new_spec)?;
             return self.resolve_url(context);
         }
-
-        crate::validate_path_case_with_canonical(&path, &canonical_resolved)?;
 
         Ok(canonical_resolved)
     }
