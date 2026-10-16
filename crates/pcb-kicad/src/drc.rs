@@ -116,12 +116,16 @@ impl DrcReport {
         let errors = self
             .violations
             .iter()
-            .filter(|v| v.severity == "error")
+            .chain(self.unconnected_items.iter())
+            .chain(self.schematic_parity.iter())
+            .filter(|v| !v.excluded && v.severity == "error")
             .count();
         let warnings = self
             .violations
             .iter()
-            .filter(|v| v.severity == "warning")
+            .chain(self.unconnected_items.iter())
+            .chain(self.schematic_parity.iter())
+            .filter(|v| !v.excluded && v.severity == "warning")
             .count();
         (errors, warnings)
     }
@@ -259,6 +263,26 @@ mod tests {
         let (errors, warnings) = report.violation_counts();
         assert_eq!(errors, 1);
         assert_eq!(warnings, 1);
+    }
+
+    #[test]
+    fn test_violation_counts_ignore_kicad_exclusions() {
+        let mut report = DrcReport::from_json(SAMPLE_DRC_JSON).unwrap();
+        report.violations[0].excluded = true;
+        assert_eq!(report.violation_counts(), (0, 1));
+    }
+
+    #[test]
+    fn test_all_drc_collections_count_and_render_as_diagnostics() {
+        let mut report = DrcReport::from_json(SAMPLE_DRC_JSON).unwrap();
+        report.unconnected_items.push(report.violations[0].clone());
+        report.schematic_parity.push(report.violations[1].clone());
+        assert_eq!(report.violation_counts(), (2, 2));
+        let mut diagnostics = Diagnostics::default();
+        report.add_to_diagnostics(&mut diagnostics, "layout.kicad_pcb");
+        report.add_unconnected_items_to_diagnostics(&mut diagnostics, "layout.kicad_pcb");
+        report.add_schematic_parity_to_diagnostics(&mut diagnostics, "layout.kicad_pcb");
+        assert_eq!(diagnostics.diagnostics.len(), 4);
     }
 
     #[test]

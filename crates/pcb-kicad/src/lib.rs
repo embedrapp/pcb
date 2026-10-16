@@ -650,6 +650,7 @@ pub fn run_drc(
     let mut builder = KiCadCliBuilder::new()
         .command("pcb")
         .subcommand("drc")
+        .arg("--refill-zones")
         .arg("--format")
         .arg("json")
         .arg("--severity-all") // Report all severities (errors and warnings)

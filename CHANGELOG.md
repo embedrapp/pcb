@@ -14,6 +14,7 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- `pcb layout --check` now refills copper zones before KiCad DRC, reports unconnected and schematic-parity items, and excludes user-ignored findings from active error/warning totals, matching Embedr board checks.
 - KiCad imports now avoid redundant prelude loads, and LSP evaluation keeps structurally valid imported schematics renderable while reporting incomplete BOM sourcing diagnostics.
 
 ## [0.4.26] - 2026-08-08

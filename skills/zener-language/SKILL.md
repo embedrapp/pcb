@@ -110,7 +110,7 @@ When renaming or deleting an item, update or remove only its corresponding recor
 
 The stdlib is toolchain-managed and does not belong in `[dependencies]`. For other packages, change the `load()` or `Module()` import in `.zen`, then run `pcb sync`. Let `pcb sync` maintain direct and indirect dependency state in `pcb.toml`.
 
-Use `pcb list -m -u` to inspect compatible and breaking updates. Use `pcb add -u` for compatible updates and `pcb list -m -versions <url>` plus `pcb add <url>@<version>` for a specific or breaking version. Do not hand-edit resolved versions or use the legacy `pcb update` workflow.
+Use `pcb list -m -u` to inspect compatible and breaking updates. Use the installed `pcb add` or `pcb update` options for intentional dependency changes, then inspect the resulting manifest and rebuild. Do not hand-edit resolved versions.
 
 Board roots contain workspace and board metadata. Registry roots contain reusable component and module members without a root board. Reusable packages contain their own direct dependencies and optional default parts.
 
@@ -129,8 +129,18 @@ Prefer stdlib generics for common passives, discretes, connectors, test points, 
 
 For ordinary boards, prefer `Board(..., layers=<count>)`; standard defaults exist for 2, 4, 6, 8, and 10 layers. Customize them with `outer_copper_weight`, `copper_finish`, `solder_mask_color`, `track_widths`, and `via_dimensions`. Use explicit stackup and design-rule records only when those defaults are insufficient; an explicit `config` merges over the layers-derived defaults.
 
+## Existing routed boards and layout sync
+
+`pcb sync` reconciles package imports and dependency state; it does not synchronize a KiCad board. `pcb layout <FILE> --no-open` still writes the board. `pcb layout <FILE> --check` checks source/layout agreement without applying geometry changes and is not a preview of a footprint replacement. Inspect `pcb layout --help` for version-specific flags: newer fork releases support `--sync-footprints` to reload source-library geometry for same-ID managed footprints; a normal sync otherwise keeps that embedded geometry.
+
+The layout synchronizer's view/complement model takes component identity, reference/value, pad connections, and board rules from Zener while retaining board-authored placement, tracks, vias, zones, and graphics where possible. A changed footprint ID is removed and re-added, with position inheritance when possible. Preserved copper can still miss a moved/resized pad, become a dangling stub, or retain an obsolete net. Do not describe layout sync as a blanket copper wipe or as proof that old routes remain valid.
+
+Before a necessary source-to-board sync on a routed design, checkpoint the current `.kicad_pcb`, `.kicad_pro`, and relevant custom rules. Inspect old pad numbers, nets, positions and layers; track/via IDs and widths; zones; and DRC/unconnected findings. Sync on an isolated copy when practical, compare the resulting pad mapping, footprint geometry, routing, project rules and native connectivity, then repair only affected copper. Equal track counts or UUIDs do not prove pad contact. Do not delete all copper on a shared net just because one component changed.
+
+Zen declares routing rules, not individual routes. `Board(..., track_widths=[...])` adds selectable widths; `BoardConfig` can set minimum width and `NetClass.track_width`, and impedance-tagged nets can match a configured net class. None of those resize existing segments. Inspect actual KiCad segment widths, edit affected copper deliberately, and recheck clearances and DRC. Layout sync may patch `.kicad_pro` from the Zen board config, so compare rules as well as geometry.
+
 ## Validation
 
-After changing imports, run `pcb sync` from the relevant workspace or package. Run `pcb fmt` on changed Zener and `pcb build <path>` for the affected entrypoints. Use `pcb bom <entrypoint>.zen -f json` when sourceability or part selection is relevant.
+After changing imports, run `pcb sync` from the relevant workspace or package. Run `pcb fmt` on changed Zener and `pcb build <path>` for the affected entrypoints. The local-first fork does not expose a top-level `pcb bom` command; use the available build/netlist or Embedr BOM tools when sourceability or part selection is relevant.
 
 Verification should cover the public API, electrical constraints, stable topology, dependencies, sourceability where applicable, and preservation of schematic position state.

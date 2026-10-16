@@ -173,6 +173,14 @@ pub fn execute(mut args: LayoutArgs) -> Result<()> {
         let working_dir = pcb_file.parent();
         let report = pcb_kicad::run_drc(&pcb_file, false, working_dir, drc_output.path())?;
         report.add_to_diagnostics(&mut diagnostics, &display_pcb_file.to_string_lossy());
+        report.add_unconnected_items_to_diagnostics(
+            &mut diagnostics,
+            &display_pcb_file.to_string_lossy(),
+        );
+        report.add_schematic_parity_to_diagnostics(
+            &mut diagnostics,
+            &display_pcb_file.to_string_lossy(),
+        );
         spinner.finish();
     }
 
