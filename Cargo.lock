@@ -3695,8 +3695,10 @@ dependencies = [
  "anyhow",
  "pcb-zen",
  "pcb-zen-core",
+ "serde_json",
  "starlark",
  "starlark_syntax",
+ "tempfile",
  "walkdir",
 ]
 
