@@ -2,6 +2,7 @@ mod apply;
 mod broken_pipe;
 mod build;
 mod dfm;
+mod doc;
 mod electrical_checks;
 mod fix;
 mod gerber;
