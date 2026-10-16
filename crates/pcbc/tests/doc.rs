@@ -96,3 +96,36 @@ fn configured_deferred_child_failure_exits_nonzero_without_docs() {
         "partial docs must not escape: {output:?}"
     );
 }
+
+#[test]
+fn remote_docs_use_shared_archive_cache() {
+    let mut sandbox = Sandbox::new();
+    sandbox
+        .git_fixture("https://github.com/acme/doc-cache.git")
+        .write("pcb.toml", "[dependencies]\n")
+        .write(
+            "Example.zen",
+            "\"\"\"Archived package documentation.\"\"\"\n",
+        )
+        .commit("add documented package")
+        .tag("v1.0.0", false)
+        .push_mirror();
+
+    let output = sandbox
+        .cmd(
+            env!("CARGO_BIN_EXE_pcbc"),
+            ["doc", "--package", "github.com/acme/doc-cache@1.0.0"],
+        )
+        .stdout_capture()
+        .stderr_capture()
+        .run()
+        .unwrap();
+    let docs = String::from_utf8(output.stdout).unwrap();
+    assert!(docs.contains("Archived package documentation."), "{docs}");
+    assert!(
+        sandbox
+            .home
+            .join(".pcb/cache/github.com/acme/doc-cache/1.0.0/pcb.toml")
+            .is_file()
+    );
+}

@@ -8,7 +8,7 @@ Use this guide when changing the fork or rebasing it onto `diodeinc/pcb`.
 The default `pcb` binary is local-first. It should keep:
 
 - `build`, `layout`, `fmt`, `open`, `info`, `import`, `doc`, `test`, `simulate`, `vendor`, `migrate`, `update`
-- local `ipc2581` inspection/editing
+- local `ipc2581` inspection/editing and BOM exports from local files, `gltf` export, built-in `rectify`, and `new component <DIR>` imports from local files
 - the embedded `lib/std` materialized into workspaces
 - local KiCad/library/dependency resolution needed for builds
 
