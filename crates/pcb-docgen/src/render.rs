@@ -175,9 +175,9 @@ fn render_module(module: &ModuleDoc, depth: usize) -> String {
     }
 
     if !module.signature.ios.is_empty() {
-        out.push_str("**IO:**\n\n");
-        out.push_str("| Name | Type | Direction |\n");
-        out.push_str("|------|------|-----------|\n");
+        out.push_str("**IO (evaluated configuration):**\n\n");
+        out.push_str("| Name | Type | Direction | Optional |\n");
+        out.push_str("|------|------|-----------|----------|\n");
         for io in &module.signature.ios {
             let type_repr = io.type_repr.replace('|', "\\|");
             let direction = io
@@ -186,11 +186,16 @@ fn render_module(module: &ModuleDoc, depth: usize) -> String {
                 .map(std::string::ToString::to_string)
                 .unwrap_or_default();
             out.push_str(&format!(
-                "| {} | {} | {} |\n",
-                io.name, type_repr, direction
+                "| {} | {} | {} | {} |\n",
+                io.name,
+                type_repr,
+                direction,
+                if io.optional { "yes" } else { "no" }
             ));
         }
         out.push('\n');
+    } else {
+        out.push_str("**IO:** none in this configuration.\n\n");
     }
 
     if !module.signature.configs.is_empty() {
