@@ -1,8 +1,8 @@
 //! Tests for relative path loads that cross package boundaries.
 //!
 //! When a relative path like `../../modules/Led.zen` escapes the current package root,
-//! it should be resolved via URL arithmetic and the package dependency system rather
-//! than being rejected outright.
+//! it should use the target's discovered package identity and the package dependency
+//! system rather than being rejected outright.
 
 #![cfg(not(target_os = "windows"))]
 
