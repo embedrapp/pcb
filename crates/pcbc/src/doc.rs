@@ -10,6 +10,10 @@ use syntect::parsing::SyntaxSet;
 use syntect::util::{LinesWithEndings, as_24_bit_terminal_escaped};
 use termimad::MadSkin;
 
+use crate::config_input::{CONFIG_ARG_HELP, parse_config_overrides};
+use serde_json::Value as JsonValue;
+use starlark::collections::SmallMap;
+
 const LATEST_PACKAGE_VERSION: &str = "latest";
 
 #[derive(Debug, Args)]
@@ -21,12 +25,17 @@ pub struct DocArgs {
     /// Generate docs from a package (local path, @stdlib, or host/user/repo[@version])
     #[arg(long, value_name = "PACKAGE")]
     pub package: Option<String>,
+
+    /// Evaluate module IO with the same root overrides as pcb build.
+    #[arg(long = "config", value_name = "KEY=VALUE", help = CONFIG_ARG_HELP)]
+    pub config: Vec<String>,
 }
 
 pub fn execute(args: DocArgs) -> Result<()> {
+    let inputs = parse_config_overrides(&args.config)?;
     // --package flag: generate docs for a Zener package
     if let Some(pkg) = &args.package {
-        return run_docgen_for_package(pkg);
+        return run_docgen_for_package(pkg, &inputs);
     }
 
     if args.path.is_empty() {
@@ -38,11 +47,11 @@ pub fn execute(args: DocArgs) -> Result<()> {
         );
     }
 
-    run_docgen_for_package(&args.path)
+    run_docgen_for_package(&args.path, &inputs)
 }
 
 /// Generate docs for a package specified as local path, @stdlib, or remote URL
-fn run_docgen_for_package(pkg: &str) -> Result<()> {
+fn run_docgen_for_package(pkg: &str, inputs: &SmallMap<String, JsonValue>) -> Result<()> {
     // Handle @stdlib alias (with optional subpath filter)
     if pkg == "@stdlib" || pkg.starts_with("@stdlib/") {
         // Extract filter if subpath provided
@@ -55,7 +64,12 @@ fn run_docgen_for_package(pkg: &str) -> Result<()> {
         // Docgen intentionally does not support stdlib patch overrides.
         // Always render docs from the toolchain-managed embedded stdlib.
         let stdlib_root = pcb_zen_core::stdlib::native::discover_source()?;
-        return run_docgen(&stdlib_root, Some(pcb_zen_core::STDLIB_MODULE_PATH), filter);
+        return run_docgen(
+            &stdlib_root,
+            Some(pcb_zen_core::STDLIB_MODULE_PATH),
+            filter,
+            inputs,
+        );
     }
 
     // When a bare package URL matches the current workspace namespace, prefer the
@@ -63,7 +77,7 @@ fn run_docgen_for_package(pkg: &str) -> Result<()> {
     if !pkg.contains('@')
         && let Some((package_dir, package_url, filter)) = resolve_local_workspace_package_url(pkg)
     {
-        return run_docgen(&package_dir, Some(&package_url), filter.as_deref());
+        return run_docgen(&package_dir, Some(&package_url), filter.as_deref(), inputs);
     }
 
     // Handle remote package URLs (host/user/repo@version)
@@ -74,14 +88,14 @@ fn run_docgen_for_package(pkg: &str) -> Result<()> {
         let (display_name, requested_version) = parse_remote_package_spec(pkg)?;
         let (module_path, version, filter) =
             resolve_remote_package(display_name, requested_version.as_ref())?;
-        return run_docgen_for_remote_package(&module_path, &version, filter.as_deref());
+        return run_docgen_for_remote_package(&module_path, &version, filter.as_deref(), inputs);
     }
 
     // Local path - find package root and filter
     let path = PathBuf::from(pkg);
     let (package_dir, filter) = find_package_root_and_filter(&path)?;
     let url = get_local_package_url(&package_dir);
-    run_docgen(&package_dir, url.as_deref(), filter.as_deref())
+    run_docgen(&package_dir, url.as_deref(), filter.as_deref(), inputs)
 }
 
 fn resolve_local_workspace_package_url(pkg: &str) -> Option<(PathBuf, String, Option<String>)> {
@@ -264,6 +278,7 @@ fn run_docgen_for_remote_package(
     module_path: &str,
     version: &str,
     filter: Option<&str>,
+    inputs: &SmallMap<String, JsonValue>,
 ) -> Result<()> {
     let cache_dir = dirs::home_dir()
         .expect("Cannot determine home directory")
@@ -274,7 +289,7 @@ fn run_docgen_for_remote_package(
     let package_root = pcb_zen::resolve::ensure_sparse_checkout(&cache_dir, module_path, version)
         .with_context(|| format!("Failed to fetch {module_path}@{version}"))?;
 
-    run_docgen(&package_root, Some(module_path), filter)
+    run_docgen(&package_root, Some(module_path), filter, inputs)
 }
 
 /// Get the package URL for a local directory using workspace info
@@ -309,15 +324,21 @@ fn normalize_path_filter(path: &Path, filter: Option<&str>) -> Result<(PathBuf, 
     }
 }
 
-fn run_docgen(path: &Path, package_url: Option<&str>, filter: Option<&str>) -> Result<()> {
+fn run_docgen(
+    path: &Path,
+    package_url: Option<&str>,
+    filter: Option<&str>,
+    inputs: &SmallMap<String, JsonValue>,
+) -> Result<()> {
     let (dir, filter) = normalize_path_filter(path, filter)?;
 
     let display_path = get_display_path(&dir);
-    let result = pcb_docgen::generate_docs(
+    let result = pcb_docgen::generate_docs_with_inputs(
         &dir,
         package_url,
         display_path.as_deref(),
         filter.as_deref(),
+        inputs,
     )?;
 
     if result.library_count == 0 && result.module_count == 0 {

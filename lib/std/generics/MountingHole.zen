@@ -1,3 +1,19 @@
+"""Screw mounting hole with optional plating.
+
+P1 is an optional electrical connection for plated holes. Mechanical holes
+have no electrical IO; omit P1 when plating is Mechanical.
+
+Mechanical example (no electrical pin argument):
+
+```python
+MountingHole = Module("@stdlib/generics/MountingHole.zen")
+MountingHole(diameter="M3", plating="Mechanical")
+```
+
+Inspect this exact configuration with:
+`pcb doc --package @stdlib/generics/MountingHole.zen --config diameter=M3 --config plating=Mechanical`
+"""
+
 load("../io.zen", "io")
 load("../interfaces.zen", "Net")
 load("../utils.zen", "format_value")
