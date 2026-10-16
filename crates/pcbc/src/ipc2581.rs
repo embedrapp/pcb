@@ -49,6 +49,14 @@ enum Commands {
         #[command(flatten)]
         population: PopulationArgs,
     },
+    /// Export a bill of materials from a local IPC-2581 file
+    Bom {
+        /// IPC-2581 XML file to inspect
+        #[arg(value_hint = clap::ValueHint::FilePath)]
+        file: PathBuf,
+        #[arg(short, long, default_value = "text")]
+        format: commands::bom::BomFormat,
+    },
     /// Generate the test-fixture interposer board for a board-array panel
     Interposer {
         /// Board-array IPC-2581 XML file (`board-array create` output)
@@ -499,6 +507,7 @@ pub fn execute(args: Ipc2581Args, resolution: Resolution) -> anyhow::Result<()> 
             })?;
             Ok(())
         }
+        Commands::Bom { file, format } => commands::bom::execute(&file, format),
         Commands::Interposer {
             input,
             output,
