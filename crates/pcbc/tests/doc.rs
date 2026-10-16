@@ -49,7 +49,7 @@ fn config_docs_refuse_package_wide_overrides_and_unknown_parameters() {
         (
             "@stdlib/generics/MountingHole.zen",
             "platign=Mechanical",
-            "Unknown config parameter 'platign'",
+            "Unknown root input(s): platign",
         ),
     ] {
         let output = sandbox
@@ -68,4 +68,31 @@ fn config_docs_refuse_package_wide_overrides_and_unknown_parameters() {
             "{output:?}"
         );
     }
+}
+
+#[test]
+fn configured_deferred_child_failure_exits_nonzero_without_docs() {
+    let mut sandbox = Sandbox::new();
+    sandbox.write("pcb.toml", "[dependencies]\n")
+        .write("root.zen", "bad = config(bool, default=False)\nChild = Module(\"./child.zen\")\nChild(enabled=bad)\n")
+        .write("child.zen", "enabled = config(bool, default=False)\nif enabled:\n    fail(\"Configured child failure\")\n");
+    let output = sandbox
+        .cmd(
+            env!("CARGO_BIN_EXE_pcbc"),
+            ["doc", "--package", "root.zen", "--config", "bad=true"],
+        )
+        .stdout_capture()
+        .stderr_capture()
+        .unchecked()
+        .run()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Configured child failure"),
+        "{output:?}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "partial docs must not escape: {output:?}"
+    );
 }
