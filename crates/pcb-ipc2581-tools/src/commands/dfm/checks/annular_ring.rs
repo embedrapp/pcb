@@ -477,7 +477,7 @@ limit = { minimum = "0.2 mm" }"#,
 
     /// A plated 1 mm hole with a circular land of `land_mm` on both outer
     /// layers, and optional negative features on the top layer.
-    fn circular_land_board(land_mm: f64, top_negative: &str) -> Ipc2581 {
+    fn circular_land_board(land_mm: f64, top_negative: &str, drill_extra: &str) -> Ipc2581 {
         Ipc2581::parse(&format!(
             r#"<IPC-2581 revision="C" xmlns="http://webstds.ipc.org/2581">
   <Content roleRef="owner"><FunctionMode mode="FABRICATION"/><StepRef name="board"/>
@@ -499,7 +499,7 @@ limit = { minimum = "0.2 mm" }"#,
       <LayerFeature layerRef="L1"><Set><Pad padstackDefRef="stack"><Location x="3" y="4"/><StandardPrimitiveRef id="land"/></Pad></Set></LayerFeature>
       <LayerFeature layerRef="DRILL"><Set geometry="stack">
         <Hole name="H1" diameter="1" platingStatus="PLATED" x="3" y="4"/>
-      </Set></LayerFeature>
+      </Set>{drill_extra}</LayerFeature>
     </Step>
   </CadData></Ecad>
 </IPC-2581>"#
@@ -518,14 +518,14 @@ limit = { minimum = "0.2 mm" }"#,
     fn a_circular_land_exactly_at_the_limit_meets_it() {
         // Ring = (1.4 - 1) / 2 = 0.2 mm, the limit. The composed image draws
         // the land's arc as chords and alone measures it just short.
-        let ring = worst_ring(&circular_land_board(1.4, ""));
+        let ring = worst_ring(&circular_land_board(1.4, "", ""));
         assert!((ring.mm - 0.2).abs() < 1e-9, "{ring:?}");
         assert!(super::super::judge(&ring, 0.2) == super::super::Judgement::Meets);
     }
 
     #[test]
     fn a_circular_land_below_the_limit_still_violates() {
-        let ring = worst_ring(&circular_land_board(1.38, ""));
+        let ring = worst_ring(&circular_land_board(1.38, "", ""));
         assert!(ring.mm < 0.2);
         assert!(super::super::judge(&ring, 0.2) == super::super::Judgement::Violates);
     }
@@ -537,9 +537,22 @@ limit = { minimum = "0.2 mm" }"#,
           <PolyBegin x="3.65" y="3.9"/><PolyStepSegment x="3.8" y="3.9"/><PolyStepSegment x="3.8" y="4.1"/>
           <PolyStepSegment x="3.65" y="4.1"/><PolyStepSegment x="3.65" y="3.9"/>
         </Polygon></Contour></Features></Set>"#;
-        let ring = worst_ring(&circular_land_board(1.4, notch));
+        let ring = worst_ring(&circular_land_board(1.4, notch, ""));
         assert!(ring.mm < 0.16, "{ring:?}");
         assert!(super::super::judge(&ring, 0.2) == super::super::Judgement::Violates);
+    }
+
+    #[test]
+    fn a_slot_reaching_the_land_withholds_the_exact_bound() {
+        // A plated drill-layer slot spanning both layers bites 2 um into the
+        // land's edge (x = 3.7): within the image's uncertainty, so only the
+        // cutout check keeps the full disk from being claimed.
+        let slot = r#"<Set><SlotCavity name="S1" platingStatus="PLATED"><Location x="3.898" y="4"/><Oval width="0.4" height="0.2"/></SlotCavity></Set>"#;
+        let ring = worst_ring(&circular_land_board(1.4, "", slot));
+        assert!(
+            super::super::judge(&ring, 0.2) != super::super::Judgement::Meets,
+            "{ring:?}"
+        );
     }
 
     #[test]
