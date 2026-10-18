@@ -3302,7 +3302,7 @@ dependencies = [
 
 [[package]]
 name = "newstroke"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 
 [[package]]
 name = "nibble_vec"
@@ -3668,7 +3668,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-command-runner"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anyhow",
  "os_pipe",
@@ -3678,7 +3678,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-component-gen"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anyhow",
  "deunicode",
@@ -3704,7 +3704,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-eda"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anyhow",
  "pcb-sexpr",
@@ -3717,7 +3717,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-fmt"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anyhow",
  "ruff_formatter",
@@ -3726,7 +3726,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-gltf"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -3762,7 +3762,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-ipc-wasm"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3782,7 +3782,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-ipc2581-tools"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anstream",
  "anyhow",
@@ -3841,7 +3841,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-kicad"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anyhow",
  "atomicwrites",
@@ -3860,7 +3860,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-kicad-sch"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anyhow",
  "insta",
@@ -3877,7 +3877,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-layout"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anyhow",
  "assert_fs",
@@ -3904,7 +3904,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-native-dialog"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anstream",
  "anyhow",
@@ -3912,7 +3912,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-sch"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "allocative",
  "anyhow",
@@ -3938,7 +3938,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-sexpr"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "base64 0.23.1",
  "bumpalo",
@@ -3952,7 +3952,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-sim"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -3964,7 +3964,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-starlark-lsp"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anstream",
  "anyhow",
@@ -3988,7 +3988,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-step"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anyhow",
  "atomicwrites",
@@ -4011,7 +4011,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-test-utils"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "assert_cmd",
  "assert_fs",
@@ -4028,7 +4028,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-ui"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anyhow",
  "colored",
@@ -4039,7 +4039,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-zen"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anstream",
  "anyhow",
@@ -4082,7 +4082,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-zen-core"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "allocative",
  "anstream",
@@ -4118,7 +4118,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-zen-wasm"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "console_error_panic_hook",
  "console_log",
@@ -4139,7 +4139,7 @@ dependencies = [
 
 [[package]]
 name = "pcbc"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anstream",
  "anyhow",
@@ -4693,7 +4693,7 @@ dependencies = [
 
 [[package]]
 name = "rectify"
-version = "0.4.85-embedr.1"
+version = "0.4.85-embedr.2"
 dependencies = [
  "anstream",
  "anyhow",

@@ -123,7 +123,11 @@ pub(super) fn evaluate(
                 })
                 .map(|(copper_index, subject)| {
                     let enclosure = if subject.in_copper {
-                        boundaries[copper_index].circular_enclosure(hole.center, radius, limit_mm)
+                        boundaries[copper_index]
+                            .circular_enclosure(hole.center, radius, limit_mm)
+                            .map(|enclosure| {
+                                exact_land_bound(enclosure, subject.land, hole.center, radius)
+                            })
                     } else {
                         Some(Distance::exact(0.0, hole.center, hole.center))
                     };
@@ -169,6 +173,44 @@ pub(super) fn evaluate(
             .filter_map(|(_, measured)| measured)
             .collect(),
     })
+}
+
+/// Tighten a ring measured on the polygonal copper image with the exact disk
+/// of the hole's own land. With `D(c, R)` inside the copper, the disk
+/// `D(p, R − |p − c|)` is too, so the ring is at least `R − |p − c| − r`
+/// exactly. Arcs in the composed image are chords, so a land drawn exactly
+/// at the limit otherwise measures just below it, within the image's
+/// uncertainty, and can never be decided.
+///
+/// The bound is used only when the image agrees with it: a measured ring
+/// whose upper bound is below the disk's means the image does not contain
+/// the land as stated, and the image measurement stands.
+fn exact_land_bound(
+    enclosure: Distance,
+    land: Option<&Land>,
+    center: Point,
+    hole_radius_mm: f64,
+) -> Distance {
+    let Some(disk) = land.and_then(|land| land.disk) else {
+        return enclosure;
+    };
+    let bound = disk.radius_mm - center.distance_to(disk.center) - hole_radius_mm;
+    let upper = enclosure.mm + enclosure.uncertainty_mm;
+    if bound <= enclosure.mm || bound > upper + tol::REGION_MM {
+        return enclosure;
+    }
+    let direction = enclosure.first - center;
+    let direction = if direction.length() <= f64::EPSILON {
+        Point::new(1.0, 0.0)
+    } else {
+        direction / direction.length()
+    };
+    Distance::with_uncertainty(
+        bound,
+        enclosure.first,
+        enclosure.first + direction * bound,
+        (upper - bound).max(0.0),
+    )
 }
 
 /// Only copper inside a window around the required disk can change material
@@ -431,6 +473,86 @@ limit = { minimum = "0.2 mm" }"#,
         assert_eq!(measured.layers[1].name, "L1");
         assert_eq!(measured.subjects[1].kind, "padstack_land");
         assert_eq!(measured.subjects[1].padstack_ref.as_deref(), Some("stack"));
+    }
+
+    /// A plated 1 mm hole with a circular land of `land_mm` on both outer
+    /// layers, and optional negative features on the top layer.
+    fn circular_land_board(land_mm: f64, top_negative: &str, drill_extra: &str) -> Ipc2581 {
+        Ipc2581::parse(&format!(
+            r#"<IPC-2581 revision="C" xmlns="http://webstds.ipc.org/2581">
+  <Content roleRef="owner"><FunctionMode mode="FABRICATION"/><StepRef name="board"/>
+    <DictionaryStandard units="MILLIMETER">
+      <EntryStandard id="land"><Circle diameter="{land_mm}"/></EntryStandard>
+    </DictionaryStandard>
+  </Content>
+  <Ecad><CadHeader units="MILLIMETER"/><CadData>
+    <Layer name="L0" layerFunction="CONDUCTOR" side="TOP" polarity="POSITIVE"/>
+    <Layer name="L1" layerFunction="CONDUCTOR" side="BOTTOM" polarity="POSITIVE"/>
+    <Layer name="DRILL" layerFunction="DRILL" side="ALL" polarity="POSITIVE">
+      <Span fromLayer="L0" toLayer="L1"/>
+    </Layer>
+    <Step name="board" type="BOARD"><Datum x="0" y="0"/>
+      <LayerFeature layerRef="L0">
+        <Set><Pad padstackDefRef="stack"><Location x="3" y="4"/><StandardPrimitiveRef id="land"/></Pad></Set>
+        {top_negative}
+      </LayerFeature>
+      <LayerFeature layerRef="L1"><Set><Pad padstackDefRef="stack"><Location x="3" y="4"/><StandardPrimitiveRef id="land"/></Pad></Set></LayerFeature>
+      <LayerFeature layerRef="DRILL"><Set geometry="stack">
+        <Hole name="H1" diameter="1" platingStatus="PLATED" x="3" y="4"/>
+      </Set>{drill_extra}</LayerFeature>
+    </Step>
+  </CadData></Ecad>
+</IPC-2581>"#
+        ))
+        .unwrap()
+    }
+
+    fn worst_ring(ipc: &Ipc2581) -> Distance {
+        let evaluation = evaluate_pth(ipc);
+        assert_eq!(evaluation.checked, 2);
+        assert_eq!(evaluation.measured.len(), 1);
+        evaluation.measured[0].distance
+    }
+
+    #[test]
+    fn a_circular_land_exactly_at_the_limit_meets_it() {
+        // Ring = (1.4 - 1) / 2 = 0.2 mm, the limit. The composed image draws
+        // the land's arc as chords and alone measures it just short.
+        let ring = worst_ring(&circular_land_board(1.4, "", ""));
+        assert!((ring.mm - 0.2).abs() < 1e-9, "{ring:?}");
+        assert!(super::super::judge(&ring, 0.2) == super::super::Judgement::Meets);
+    }
+
+    #[test]
+    fn a_circular_land_below_the_limit_still_violates() {
+        let ring = worst_ring(&circular_land_board(1.38, "", ""));
+        assert!(ring.mm < 0.2);
+        assert!(super::super::judge(&ring, 0.2) == super::super::Judgement::Violates);
+    }
+
+    #[test]
+    fn a_clear_feature_reaching_the_land_withholds_the_exact_bound() {
+        // A negative notch bites 0.05 mm into the top land's edge.
+        let notch = r#"<Set polarity="NEGATIVE"><Features><Contour><Polygon>
+          <PolyBegin x="3.65" y="3.9"/><PolyStepSegment x="3.8" y="3.9"/><PolyStepSegment x="3.8" y="4.1"/>
+          <PolyStepSegment x="3.65" y="4.1"/><PolyStepSegment x="3.65" y="3.9"/>
+        </Polygon></Contour></Features></Set>"#;
+        let ring = worst_ring(&circular_land_board(1.4, notch, ""));
+        assert!(ring.mm < 0.16, "{ring:?}");
+        assert!(super::super::judge(&ring, 0.2) == super::super::Judgement::Violates);
+    }
+
+    #[test]
+    fn a_slot_reaching_the_land_withholds_the_exact_bound() {
+        // A plated drill-layer slot spanning both layers bites 2 um into the
+        // land's edge (x = 3.7): within the image's uncertainty, so only the
+        // cutout check keeps the full disk from being claimed.
+        let slot = r#"<Set><SlotCavity name="S1" platingStatus="PLATED"><Location x="3.898" y="4"/><Oval width="0.4" height="0.2"/></SlotCavity></Set>"#;
+        let ring = worst_ring(&circular_land_board(1.4, "", slot));
+        assert!(
+            super::super::judge(&ring, 0.2) != super::super::Judgement::Meets,
+            "{ring:?}"
+        );
     }
 
     #[test]
