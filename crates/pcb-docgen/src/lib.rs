@@ -55,6 +55,7 @@ pub fn generate_docs_with_inputs(
     let package_root = package_root
         .canonicalize()
         .unwrap_or_else(|_| package_root.to_path_buf());
+    let zen_files = documented_files(&package_root, filter, inputs)?;
     let file_provider = DefaultFileProvider::new();
     let workspace_info =
         pcb_zen::get_workspace_info(&file_provider, &package_root).with_context(|| {
@@ -72,10 +73,10 @@ pub fn generate_docs_with_inputs(
         })?;
     render_package_docs(
         &package_root,
+        zen_files,
         &resolution,
         package_url,
         display_path,
-        filter,
         inputs,
     )
 }
@@ -93,6 +94,7 @@ pub fn generate_stdlib_docs_with_inputs(
 ) -> Result<DocsResult> {
     let stdlib_root = pcb_zen_core::stdlib::native::discover_source()?;
     let stdlib_root = stdlib_root.canonicalize().unwrap_or(stdlib_root);
+    let zen_files = documented_files(&stdlib_root, filter, inputs)?;
     let scratch = tempfile::Builder::new()
         .prefix("pcb-doc-stdlib-")
         .tempdir()
@@ -115,27 +117,35 @@ pub fn generate_stdlib_docs_with_inputs(
     let display_path = stdlib_root.to_string_lossy().into_owned();
     render_package_docs(
         &stdlib_root,
+        zen_files,
         &resolution,
         package_url,
         Some(&display_path),
-        filter,
         inputs,
     )
 }
 
-fn render_package_docs(
+/// The files to document, checked before any dependency resolution.
+fn documented_files(
     package_root: &Path,
-    resolution: &pcb_zen_core::resolution::ResolutionResult,
-    package_url: Option<&str>,
-    display_path: Option<&str>,
     filter: Option<&str>,
     inputs: &SmallMap<String, JsonValue>,
-) -> Result<DocsResult> {
+) -> Result<Vec<PathBuf>> {
     let zen_files = collect_zen_files(package_root, filter)?;
     if !inputs.is_empty() && zen_files.len() != 1 {
         anyhow::bail!("--config documentation requires a single .zen file target");
     }
+    Ok(zen_files)
+}
 
+fn render_package_docs(
+    package_root: &Path,
+    zen_files: Vec<PathBuf>,
+    resolution: &pcb_zen_core::resolution::ResolutionResult,
+    package_url: Option<&str>,
+    display_path: Option<&str>,
+    inputs: &SmallMap<String, JsonValue>,
+) -> Result<DocsResult> {
     let mut files = Vec::new();
 
     for path in zen_files {
@@ -291,7 +301,14 @@ P1 = builtin.io(Net, optional=True) if mode != Mode("mechanical") else None
     fn stdlib_docs_do_not_write_into_the_stdlib_install() {
         let stdlib_root = pcb_zen_core::stdlib::native::discover_source().unwrap();
         let links = stdlib_root.join(".pcb");
-        let existed = links.exists();
+        let snapshot = || {
+            ["stdlib", "cache"].map(|name| {
+                std::fs::symlink_metadata(links.join(name))
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok())
+            })
+        };
+        let before = snapshot();
         let docs = generate_stdlib_docs_with_inputs(
             Some(pcb_zen_core::STDLIB_MODULE_PATH),
             Some("generics/Resistor.zen"),
@@ -309,7 +326,8 @@ P1 = builtin.io(Net, optional=True) if mode != Mode("mechanical") else None
                     .into_owned()
             )
         );
-        assert_eq!(links.exists(), existed);
+        // Neither link may be created or replaced inside the install.
+        assert_eq!(snapshot(), before);
     }
 
     #[test]
