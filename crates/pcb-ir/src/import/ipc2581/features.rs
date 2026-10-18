@@ -701,6 +701,9 @@ pub(super) fn extract_pad(
     apply_ipc_placement(&mut feature, placement);
     feature.padstack_ref = pad.padstack_def_ref;
     feature.primitive_ref = primitive_ref;
+    feature.shape = filled_circle(context, shape).map(|diameter| SimpleShape::Circle {
+        diameter: diameter * placement.xform.scale,
+    });
     feature.intent.plating = padstack
         .and_then(|padstack| padstack.hole_def.as_ref())
         .map(|hole| plating_kind(hole.plating_status))
@@ -709,6 +712,29 @@ pub(super) fn extract_pad(
     push_pin_ref(doc, &mut feature, pad.pin_ref.as_ref());
 
     Ok(Some(feature))
+}
+
+/// The diameter of a shape that is exactly one filled circle. A HOLLOW,
+/// hatched or meshed circle is drawn as something else, and a VOID one clears.
+fn filled_circle(context: &ExtractContext<'_>, shape: &FeatureShape) -> Option<f64> {
+    let primitive = match shape {
+        FeatureShape::StandardPrimitive(primitive) => primitive,
+        FeatureShape::StandardPrimitiveRef(id) => context.standard_primitives.get(id).copied()?,
+        _ => return None,
+    };
+    let StandardPrimitive::Circle(circle) = primitive else {
+        return None;
+    };
+    // A FillDesc that cannot be found is not taken for a solid fill.
+    let style = primitive_style(primitive);
+    let fill = match (style.fill_property, style.fill_desc_ref) {
+        (Some(fill), _) => Some(fill),
+        (None, Some(reference)) => Some(context.fill_descs.get(&reference)?.fill_property),
+        (None, None) => None,
+    };
+    matches!(fill, None | Some(FillProperty::Fill))
+        .then_some(circle.shape.diameter)
+        .filter(|diameter| *diameter > 0.0)
 }
 
 /// A feature whose geometry is lowered to paths. A VOID shape clears whatever
