@@ -35,7 +35,7 @@ use pcb_ir::dialects::ipc::{
 use pcb_ir::dialects::{LayerRole, Side, artwork};
 use pcb_ir::geom::dfm::{BBoxIndex, Distance, WidthDisk, min_width_disk, thin_gaps_reach_mm};
 use pcb_ir::geom::region::ring_signed_area;
-use pcb_ir::geom::{Affine2, BBox, ContourSet, Point, Polarity, PreparedRegion, Span};
+use pcb_ir::geom::{Affine2, BBox, ContourSet, Point, Polarity, PreparedRegion, Span, tol};
 #[cfg(not(target_family = "wasm"))]
 use rayon::prelude::*;
 
@@ -1199,6 +1199,41 @@ pub(super) struct Land {
     pub source_set_index: u32,
     pub source_feature_index: u32,
     pub provenance: SourceLocator,
+    /// The land's exact copper disk, when the source states a circular land
+    /// that no clear feature on the layer can cut. The composed image only
+    /// approximates arcs, so this disk bounds the copper exactly.
+    pub disk: Option<LandDisk>,
+}
+
+/// A copper disk known to lie wholly inside a layer's final copper.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct LandDisk {
+    pub center: Point,
+    pub radius_mm: f64,
+}
+
+/// The exact disk of a circular land, if its stated shape agrees with its
+/// geometry and nothing of clear polarity on the layer reaches it: dark
+/// copper composed over it can only add, so the disk stays copper.
+fn land_disk(feature: &Feature, clear: &[BBox], slack_mm: f64) -> Option<LandDisk> {
+    let Some(SimpleShape::Circle { diameter }) = feature.shape else {
+        return None;
+    };
+    let radius_mm = diameter / 2.0;
+    let bbox = feature.bbox;
+    let stated = radius_mm > 0.0
+        && bbox.center().distance_to(feature.center) <= slack_mm
+        && (bbox.width() - diameter).abs() <= 2.0 * slack_mm
+        && (bbox.height() - diameter).abs() <= 2.0 * slack_mm;
+    let reach = BBox::new(
+        Point::new(feature.center.x - radius_mm, feature.center.y - radius_mm),
+        Point::new(feature.center.x + radius_mm, feature.center.y + radius_mm),
+    )
+    .expand(slack_mm);
+    (stated && !clear.iter().any(|cut| cut.intersects(reach))).then_some(LandDisk {
+        center: feature.center,
+        radius_mm,
+    })
 }
 
 #[derive(Debug)]
@@ -1996,6 +2031,13 @@ fn collect_copper_layers(
                 .layer_within(layer_index, source.conductor_reach_mm(), drilled)
                 .with_context(|| format!("failed to extract IPC-2581 copper layer '{name}'"))?;
             pcb_ir::dialects::ipc::process::expand_feature_placement_groups(&mut document);
+            let clear = document
+                .features
+                .iter()
+                .filter(|feature| feature.polarity != Polarity::Dark)
+                .map(|feature| feature.bbox)
+                .collect::<Vec<_>>();
+            let disk_slack_mm = source.resolution.accuracy.max_error_mm() + tol::REGION_MM;
             let mut lands = Vec::new();
             for feature in document.features.iter().filter(|feature| {
                 feature.kind == FeatureKind::Padstack
@@ -2022,6 +2064,7 @@ fn collect_copper_layers(
                     source_set_index: feature.source.set_index,
                     source_feature_index: feature.source.feature_index,
                     provenance: feature_provenance(source, name, feature),
+                    disk: land_disk(feature, &clear, disk_slack_mm),
                 });
             }
             pcb_ir::dialects::ipc::process::normalize_for_artwork(
