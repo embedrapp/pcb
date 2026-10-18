@@ -2024,7 +2024,13 @@ fn collect_copper_layers(
             let clear = document
                 .features
                 .iter()
-                .filter(|feature| feature.polarity != Polarity::Dark)
+                // Everything the composer can take copper away with: clear
+                // polarity, VOID shapes, and dark cutouts such as slots.
+                .filter(|feature| {
+                    feature.polarity != Polarity::Dark
+                        || feature.clears_previous_in_set
+                        || feature.bucket == FeatureBucket::Cutout
+                })
                 .map(|feature| feature.bbox)
                 .collect::<Vec<_>>();
             let disk_slack_mm = source.resolution.accuracy.max_error_mm() + tol::REGION_MM;
