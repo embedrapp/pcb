@@ -12,7 +12,6 @@ pcb-zen-core = { path = "../pcb-zen-core" }
 serde_json = { workspace = true }
 starlark = { workspace = true }
 starlark_syntax = { workspace = true }
+tempfile = { workspace = true }
 walkdir = "2"
 
-[dev-dependencies]
-tempfile = { workspace = true }
