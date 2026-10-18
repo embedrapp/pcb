@@ -62,14 +62,15 @@ fn run_docgen_for_package(pkg: &str, inputs: &SmallMap<String, JsonValue>) -> Re
         };
 
         // Docgen intentionally does not support stdlib patch overrides.
-        // Always render docs from the toolchain-managed embedded stdlib.
+        // Always render docs from the toolchain-managed embedded stdlib,
+        // without writing into its (possibly read-only) install.
         let stdlib_root = pcb_zen_core::stdlib::native::discover_source()?;
-        return run_docgen(
-            &stdlib_root,
+        let result = pcb_docgen::generate_stdlib_docs_with_inputs(
             Some(pcb_zen_core::STDLIB_MODULE_PATH),
             filter,
             inputs,
-        );
+        )?;
+        return print_docs(result, filter, &stdlib_root);
     }
 
     // When a bare package URL matches the current workspace namespace, prefer the
@@ -339,6 +340,10 @@ fn run_docgen(
         inputs,
     )?;
 
+    print_docs(result, filter.as_deref(), &dir)
+}
+
+fn print_docs(result: pcb_docgen::DocsResult, filter: Option<&str>, dir: &Path) -> Result<()> {
     if result.library_count == 0 && result.module_count == 0 {
         let filter_msg = filter
             .map(|f| format!(" matching '{}'", f))
