@@ -10,7 +10,7 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ### Changed
 
-- Synced the local-first Embedr CLI with upstream 0.4.85, including GLB export, built-in `rectify`, SQLite DFM reports, board-array planning, and KiCad compiler/runtime/layout improvements, while preserving local dependency resolution, Windows cache junction fallback, packaged `lib/std`, and downstream service removals.
+- Synced the local-first Embedr CLI with upstream 0.4.86, including stackup-aware DFM PDK profiles, `pcb gerber render`, A3 board arrays, and faster IPC-2581 BOM editing and Gerber export, while preserving local dependency resolution, Windows cache junction fallback, packaged `lib/std`, and downstream service removals.
 - Adapted `pcb doc` remote documentation to the shared Git archive package cache.
 - Preserved local IPC-2581 BOM exports, including JLCPCB CSV, without availability lookups or service dependencies.
 
