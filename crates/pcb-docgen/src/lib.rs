@@ -55,10 +55,6 @@ pub fn generate_docs_with_inputs(
     let package_root = package_root
         .canonicalize()
         .unwrap_or_else(|_| package_root.to_path_buf());
-    let zen_files = collect_zen_files(&package_root, filter)?;
-    if !inputs.is_empty() && zen_files.len() != 1 {
-        anyhow::bail!("--config documentation requires a single .zen file target");
-    }
     let file_provider = DefaultFileProvider::new();
     let workspace_info =
         pcb_zen::get_workspace_info(&file_provider, &package_root).with_context(|| {
@@ -74,6 +70,71 @@ pub fn generate_docs_with_inputs(
                 package_root.display()
             )
         })?;
+    render_package_docs(
+        &package_root,
+        &resolution,
+        package_url,
+        display_path,
+        filter,
+        inputs,
+    )
+}
+
+/// Generate documentation for the toolchain stdlib.
+///
+/// The stdlib ships with the toolchain and may be installed read-only, so it
+/// is never resolved as a workspace of its own (that would write `.pcb` links
+/// into the install). Like every workspace, a scratch workspace reaches it
+/// through its `.pcb/stdlib` link; the scratch directory is removed afterwards.
+pub fn generate_stdlib_docs_with_inputs(
+    package_url: Option<&str>,
+    filter: Option<&str>,
+    inputs: &SmallMap<String, JsonValue>,
+) -> Result<DocsResult> {
+    let stdlib_root = pcb_zen_core::stdlib::native::discover_source()?;
+    let stdlib_root = stdlib_root.canonicalize().unwrap_or(stdlib_root);
+    let scratch = tempfile::Builder::new()
+        .prefix("pcb-doc-stdlib-")
+        .tempdir()
+        .context("Failed to create a scratch workspace for stdlib documentation")?;
+    let workspace_root = scratch.path();
+    fs::write(workspace_root.join("pcb.toml"), "[workspace]\n")
+        .context("Failed to write the scratch workspace manifest")?;
+    pcb_zen::cache_index::ensure_workspace_stdlib_symlink(workspace_root)?;
+    let file_provider = DefaultFileProvider::new();
+    let workspace_info = pcb_zen::get_workspace_info(&file_provider, workspace_root)
+        .context("Failed to load the scratch workspace for stdlib documentation")?;
+    let linked_stdlib = workspace_info.workspace_stdlib_dir();
+    let resolution = pcb_zen::resolve_workspace_dependencies(workspace_info, &linked_stdlib, false)
+        .with_context(|| {
+            format!(
+                "Failed to resolve dependencies for {}",
+                stdlib_root.display()
+            )
+        })?;
+    let display_path = stdlib_root.to_string_lossy().into_owned();
+    render_package_docs(
+        &stdlib_root,
+        &resolution,
+        package_url,
+        Some(&display_path),
+        filter,
+        inputs,
+    )
+}
+
+fn render_package_docs(
+    package_root: &Path,
+    resolution: &pcb_zen_core::resolution::ResolutionResult,
+    package_url: Option<&str>,
+    display_path: Option<&str>,
+    filter: Option<&str>,
+    inputs: &SmallMap<String, JsonValue>,
+) -> Result<DocsResult> {
+    let zen_files = collect_zen_files(package_root, filter)?;
+    if !inputs.is_empty() && zen_files.len() != 1 {
+        anyhow::bail!("--config documentation requires a single .zen file target");
+    }
 
     let mut files = Vec::new();
 
@@ -81,9 +142,9 @@ pub fn generate_docs_with_inputs(
         let content = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
 
-        let file_path = get_file_path(&package_root, &path);
+        let file_path = get_file_path(package_root, &path);
 
-        match signature::try_get_signature(&path, &resolution, inputs) {
+        match signature::try_get_signature(&path, resolution, inputs) {
             signature::SignatureResult::Module(sig) => {
                 for name in inputs.keys() {
                     if !sig.configs.iter().any(|param| &param.name == name) {
@@ -222,6 +283,33 @@ P1 = builtin.io(Net, optional=True) if mode != Mode("mechanical") else None
         )
         .unwrap();
         directory
+    }
+
+    /// The toolchain stdlib may be installed read-only; documenting it must
+    /// not write workspace links into the install.
+    #[test]
+    fn stdlib_docs_do_not_write_into_the_stdlib_install() {
+        let stdlib_root = pcb_zen_core::stdlib::native::discover_source().unwrap();
+        let links = stdlib_root.join(".pcb");
+        let existed = links.exists();
+        let docs = generate_stdlib_docs_with_inputs(
+            Some(pcb_zen_core::STDLIB_MODULE_PATH),
+            Some("generics/Resistor.zen"),
+            &SmallMap::new(),
+        )
+        .unwrap();
+        assert_eq!(docs.module_count, 1);
+        assert!(docs.markdown.contains("Resistor.zen"));
+        assert!(
+            docs.markdown.contains(
+                &stdlib_root
+                    .canonicalize()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
+        assert_eq!(links.exists(), existed);
     }
 
     #[test]
