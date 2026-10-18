@@ -204,7 +204,9 @@ def _get_item_bbox(item: Any, pcbnew: Any) -> Any:
     """
     if hasattr(pcbnew, "FOOTPRINT") and isinstance(item, pcbnew.FOOTPRINT):
         # Exclude fab layers from bbox calculation
-        lset = pcbnew.LSET.AllLayersMask()
+        # AllLayersMask() is KiCad's shared static set; removing layers from
+        # it directly would drop the fab layers from "all layers" process-wide.
+        lset = pcbnew.LSET(pcbnew.LSET.AllLayersMask())
         lset.RemoveLayer(pcbnew.F_Fab)
         lset.RemoveLayer(pcbnew.B_Fab)
         return item.GetLayerBoundingBox(lset)
