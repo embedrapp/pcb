@@ -42,7 +42,6 @@ mod new;
 mod open;
 #[path = "mod/mod.rs"]
 mod pcb_mod;
-mod recovery_dialog;
 mod sim;
 mod step;
 mod test;
