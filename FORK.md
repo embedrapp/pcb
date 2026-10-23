@@ -21,6 +21,7 @@ The default `pcb` binary should not include:
 - `route`
 - `preview`
 - `publish`
+- hosted `quote`
 - `self update` or automatic update checks
 - remote sandbox or `diode://` URI handling
 - Diode component library, datasheet, availability, routing, release upload, auth, or MCP service tools
@@ -65,6 +66,38 @@ If upstream changes `ensure_workspace_cache_symlink`, reconcile carefully and ru
 - `pcb-diode-api` should remain deleted and should not be reintroduced as a dependency of `pcbc` or `pcb-ipc2581-tools`.
 - Do not add a new default feature that performs auth, network service calls, remote uploads, or availability lookups.
 - Network access for fetching generic Git/KiCad dependencies is still part of normal package resolution unless the user passes `--offline`.
+
+## Managed Release Build Cache
+
+Scheduled Linux release runs must use one stable target cache for this project,
+including when building in disposable worktrees. Configure it once in the managed
+checkout:
+
+```bash
+git config --local pcb.releaseTargetDir /srv/aisevak/.cache/pcb-release-target
+```
+
+Run the complete validation and runtime-staging script through:
+
+```bash
+bin/with-downstream-target.sh bash <validation-script>
+```
+
+The helper exports `CARGO_TARGET_DIR` from that local Git setting, falling back
+to `embedr-release-target` in the common Git directory on other hosts. Do not
+override it with a fresh per-task target. The dedicated managed Cargo home also
+uses the configured shared target as its default.
+
+The helper holds an exclusive lock through compilation, tests, and staging, and
+links the current worktree's `lib/std` beside the build artifacts for runtime
+discovery. Keep all those steps within one invocation. Concurrent release builds
+for this project wait for the lock; other projects and GitHub Actions runners
+remain independent. Dependencies are reused between runs; changed workspace
+crates can still rebuild.
+
+Stage `pcbc` as `pcb` beside a copy of `lib/std` before removing the disposable
+worktree. Preserve the shared cache for later runs. Remove a cache only while its
+lock is held and its build, test, DFM, and KiCad processes have exited.
 
 ## Verification
 
