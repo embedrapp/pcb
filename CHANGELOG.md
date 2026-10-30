@@ -10,7 +10,7 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ### Changed
 
-- Synced the local-first Embedr CLI with upstream 0.4.92, including simulation timeout fixes, faster board-array copper balancing, DFM soldermask checks, IPC-2581 drill profiles, and standard-library updates, while preserving Windows cache junction fallback, packaged `lib/std`, downstream fixes, and service removals.
+- Synced the local-first Embedr CLI with upstream 0.4.95: workspace load containment, JLCPCB stackup and DFM rules, castellation-aware board arrays, and STEP improvements. Preserved Windows cache junction fallback, packaged `lib/std`, local documentation and annular-ring fixes, and service removals.
 - Adapted `pcb doc` remote documentation to the shared Git archive package cache.
 - Preserved local IPC-2581 BOM exports, including JLCPCB CSV, without availability lookups or service dependencies.
 
