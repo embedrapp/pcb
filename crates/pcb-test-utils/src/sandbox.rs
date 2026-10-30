@@ -641,6 +641,8 @@ impl Sandbox {
         // Toolchain paths aren't user configuration: Nix installs KiCad outside /usr/bin.
         for key in [
             "KICAD_CLI",
+            "KICAD_PCBNEW",
+            "KICAD_EESCHEMA",
             "KICAD_PYTHON_INTERPRETER",
             "KICAD_PYTHON_SITE_PACKAGES",
         ] {
