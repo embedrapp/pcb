@@ -638,6 +638,18 @@ impl Sandbox {
         if let Ok(path) = std::env::var("PATH") {
             env_map.insert("PATH".into(), path);
         }
+        // Use the host's configured KiCad tools with isolated config and caches.
+        for name in [
+            "KICAD_PYTHON_INTERPRETER",
+            "KICAD_PYTHON_SITE_PACKAGES",
+            "KICAD_CLI",
+            "KICAD_PCBNEW",
+            "KICAD_EESCHEMA",
+        ] {
+            if let Ok(value) = std::env::var(name) {
+                env_map.insert(name.into(), value);
+            }
+        }
         env_map.insert(
             "GIT_CONFIG_GLOBAL".into(),
             self.gitconfig.to_string_lossy().into_owned(),
