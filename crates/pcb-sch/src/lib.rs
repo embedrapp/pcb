@@ -1443,17 +1443,22 @@ mod tests {
         let mut schematic = Schematic::new();
         let mod_ref = ModuleRef::from_path(Path::new("/test.pmod"), "TestModule");
 
-        let named_ref = InstanceRef::new(mod_ref.clone(), vec!["C1".into()]);
+        // `C2` sorts before the unnamed parts, so numbering in order would give it C1.
+        let named_ref = InstanceRef::new(mod_ref.clone(), vec!["C2".into()]);
         let named = Instance::component(mod_ref.clone()).with_attribute("prefix", "C".to_string());
         schematic.add_instance(named_ref.clone(), named);
 
-        // Unnamed capacitors are numbered around the claimed C1.
-        let a_ref = InstanceRef::new(mod_ref.clone(), vec!["bypass_a".into()]);
-        let a = Instance::component(mod_ref.clone()).with_attribute("prefix", "C".to_string());
-        schematic.add_instance(a_ref.clone(), a);
-        let b_ref = InstanceRef::new(mod_ref.clone(), vec!["bypass_b".into()]);
-        let b = Instance::component(mod_ref.clone()).with_attribute("prefix", "C".to_string());
-        schematic.add_instance(b_ref.clone(), b);
+        // Unnamed capacitors are numbered around the claimed C2.
+        let unnamed: Vec<InstanceRef> = ["bypass_a", "bypass_b", "bypass_c"]
+            .into_iter()
+            .map(|name| {
+                let unnamed_ref = InstanceRef::new(mod_ref.clone(), vec![name.into()]);
+                let c =
+                    Instance::component(mod_ref.clone()).with_attribute("prefix", "C".to_string());
+                schematic.add_instance(unnamed_ref.clone(), c);
+                unnamed_ref
+            })
+            .collect();
 
         // A name whose prefix does not match the component's is not a hint.
         let r_ref = InstanceRef::new(mod_ref.clone(), vec!["C9".into()]);
@@ -1461,9 +1466,10 @@ mod tests {
         schematic.add_instance(r_ref.clone(), r);
 
         let ref_map = schematic.assign_reference_designators();
-        assert_eq!(ref_map.get(&named_ref), Some(&"C1".to_string()));
-        assert_eq!(ref_map.get(&a_ref), Some(&"C2".to_string()));
-        assert_eq!(ref_map.get(&b_ref), Some(&"C3".to_string()));
+        assert_eq!(ref_map.get(&named_ref), Some(&"C2".to_string()));
+        assert_eq!(ref_map.get(&unnamed[0]), Some(&"C1".to_string()));
+        assert_eq!(ref_map.get(&unnamed[1]), Some(&"C3".to_string()));
+        assert_eq!(ref_map.get(&unnamed[2]), Some(&"C4".to_string()));
         assert_eq!(ref_map.get(&r_ref), Some(&"R1".to_string()));
     }
 
