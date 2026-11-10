@@ -178,9 +178,17 @@ mod refdes_alloc {
         instance_path: &[Symbol],
         component_prefix: &str,
     ) -> Option<u32> {
-        // Hints are allowed in any non-leaf segment of the path.
+        // Hints are allowed in any non-leaf segment of the path. A component
+        // instantiated directly in the root module has no such segment, so its
+        // own name (e.g. an imported `Component(name = "C67")`) is the hint.
+        // Leaf names deeper in the hierarchy stay ignored: a module's `R1` is
+        // reused by every instance of that module.
         let (leaf, prefix_path) = instance_path.split_last()?;
-        let _ = leaf;
+        if prefix_path.is_empty() {
+            return parse_hint(leaf)
+                .filter(|hint| hint.prefix == component_prefix)
+                .map(|hint| hint.number);
+        }
 
         let mut matching = prefix_path
             .iter()
@@ -878,6 +886,7 @@ impl Schematic {
         // Opportunistic heuristic:
         // If any non-leaf segment of the hierarchical instance path looks like a valid refdes
         // (e.g. `foo.R22.part`) and matches the component's prefix, honor it when safe.
+        // A component directly in the root module (e.g. `C67`) hints with its own name.
         //
         // Safety rules:
         // - Only accept 1-3 uppercase letters + 1-4 digits, no leading zeros.
@@ -1401,6 +1410,105 @@ mod tests {
 
         let ref_map = schematic.assign_reference_designators();
         assert_eq!(ref_map.get(&a_ref), Some(&"R1".to_string()));
+    }
+
+    #[test]
+    fn assign_refdes_honors_top_level_leaf_names_across_gaps() {
+        let mut schematic = Schematic::new();
+        let mod_ref = ModuleRef::from_path(Path::new("/test.pmod"), "TestModule");
+
+        // An import that omitted C65 and C66: the names after the gap must
+        // keep their numbers instead of shifting down to fill it.
+        let names: Vec<String> = (1..=64).chain(67..=107).map(|n| format!("C{n}")).collect();
+        for name in &names {
+            let c_ref = InstanceRef::new(mod_ref.clone(), vec![name.as_str().into()]);
+            let c = Instance::component(mod_ref.clone()).with_attribute("prefix", "C".to_string());
+            schematic.add_instance(c_ref, c);
+        }
+
+        let ref_map = schematic.assign_reference_designators();
+        for name in &names {
+            let c_ref = InstanceRef::new(mod_ref.clone(), vec![name.as_str().into()]);
+            assert_eq!(ref_map.get(&c_ref), Some(name));
+        }
+        assert!(!ref_map.values().any(|r| r == "C65" || r == "C66"));
+
+        // A second assignment keeps every reference.
+        let again = schematic.assign_reference_designators();
+        assert_eq!(again, ref_map);
+    }
+
+    #[test]
+    fn assign_refdes_top_level_leaf_name_skips_claimed_numbers() {
+        let mut schematic = Schematic::new();
+        let mod_ref = ModuleRef::from_path(Path::new("/test.pmod"), "TestModule");
+
+        // `C2` sorts before the unnamed parts, so numbering in order would give it C1.
+        let named_ref = InstanceRef::new(mod_ref.clone(), vec!["C2".into()]);
+        let named = Instance::component(mod_ref.clone()).with_attribute("prefix", "C".to_string());
+        schematic.add_instance(named_ref.clone(), named);
+
+        // Unnamed capacitors are numbered around the claimed C2.
+        let unnamed: Vec<InstanceRef> = ["bypass_a", "bypass_b", "bypass_c"]
+            .into_iter()
+            .map(|name| {
+                let unnamed_ref = InstanceRef::new(mod_ref.clone(), vec![name.into()]);
+                let c =
+                    Instance::component(mod_ref.clone()).with_attribute("prefix", "C".to_string());
+                schematic.add_instance(unnamed_ref.clone(), c);
+                unnamed_ref
+            })
+            .collect();
+
+        // A name whose prefix does not match the component's is not a hint.
+        let r_ref = InstanceRef::new(mod_ref.clone(), vec!["C9".into()]);
+        let r = Instance::component(mod_ref.clone()).with_attribute("type", "res".to_string());
+        schematic.add_instance(r_ref.clone(), r);
+
+        let ref_map = schematic.assign_reference_designators();
+        assert_eq!(ref_map.get(&named_ref), Some(&"C2".to_string()));
+        assert_eq!(ref_map.get(&unnamed[0]), Some(&"C1".to_string()));
+        assert_eq!(ref_map.get(&unnamed[1]), Some(&"C3".to_string()));
+        assert_eq!(ref_map.get(&unnamed[2]), Some(&"C4".to_string()));
+        assert_eq!(ref_map.get(&r_ref), Some(&"R1".to_string()));
+    }
+
+    #[test]
+    fn assign_refdes_top_level_leaf_name_yields_to_conflicts() {
+        let mut schematic = Schematic::new();
+        let mod_ref = ModuleRef::from_path(Path::new("/test.pmod"), "TestModule");
+
+        // A pre-assigned C5 wins; the top-level name C5 falls back to numbering.
+        let fixed_ref = InstanceRef::new(mod_ref.clone(), vec!["decoupling".into()]);
+        let mut fixed =
+            Instance::component(mod_ref.clone()).with_attribute("prefix", "C".to_string());
+        fixed.reference_designator = Some("C5".to_string());
+        schematic.add_instance(fixed_ref.clone(), fixed);
+
+        let named_ref = InstanceRef::new(mod_ref.clone(), vec!["C5".into()]);
+        let named = Instance::component(mod_ref.clone()).with_attribute("prefix", "C".to_string());
+        schematic.add_instance(named_ref.clone(), named);
+
+        // A top-level name and a path hint for the same number cancel out.
+        let top_ref = InstanceRef::new(mod_ref.clone(), vec!["C7".into()]);
+        let top = Instance::component(mod_ref.clone()).with_attribute("prefix", "C".to_string());
+        schematic.add_instance(top_ref.clone(), top);
+        let nested_ref = InstanceRef::new(
+            mod_ref.clone(),
+            vec!["C7_mod".into(), "C7".into(), "c".into()],
+        );
+        let nested = Instance::component(mod_ref.clone()).with_attribute("prefix", "C".to_string());
+        schematic.add_instance(nested_ref.clone(), nested);
+
+        let ref_map = schematic.assign_reference_designators();
+        assert_eq!(ref_map.get(&fixed_ref), Some(&"C5".to_string()));
+        assert_ne!(ref_map.get(&named_ref), Some(&"C5".to_string()));
+        assert_ne!(ref_map.get(&top_ref), Some(&"C7".to_string()));
+        assert_ne!(ref_map.get(&nested_ref), Some(&"C7".to_string()));
+        let mut all: Vec<&String> = ref_map.values().collect();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), 4);
     }
 
     #[test]

@@ -59,3 +59,51 @@ fn refdes_assignment_uses_natural_hier_name_sort() {
         );
     }
 }
+
+fn refdes_by_hier_name(files: Vec<(String, String)>) -> HashMap<String, String> {
+    let result = common::eval_zen(files);
+    assert!(result.is_success(), "eval failed: {:?}", result.diagnostics);
+    let sch_result = result.output.unwrap().to_schematic_with_diagnostics();
+    let sch = sch_result
+        .output
+        .unwrap_or_else(|| panic!("schematic conversion failed: {:?}", sch_result.diagnostics));
+    sch.instances
+        .iter()
+        .filter(|(_, inst)| matches!(inst.kind, InstanceKind::Component))
+        .filter_map(|(iref, inst)| {
+            let hier_name = iref
+                .instance_path
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(".");
+            inst.reference_designator
+                .as_ref()
+                .map(|rd| (hier_name, rd.clone()))
+        })
+        .collect()
+}
+
+#[test]
+fn refdes_assignment_keeps_top_level_names_after_a_gap() {
+    // An imported board that omitted C65 and C66.
+    let numbers: Vec<u32> = (1..=64).chain(67..=107).collect();
+    let mut decls = String::new();
+    decls.push_str("vcc = Net(\"VCC\")\n\n");
+    for n in &numbers {
+        decls.push_str(&format!(
+            "Component(name = \"C{n}\", footprint = \"TEST:0402\", pin_defs = {{\"V\": \"1\"}}, pins = {{\"V\": vcc}}, prefix = \"C\")\n",
+        ));
+    }
+    let files = vec![("main.zen".to_string(), decls)];
+
+    let first = refdes_by_hier_name(files.clone());
+    assert_eq!(first.len(), numbers.len());
+    for n in &numbers {
+        let name = format!("C{n}");
+        assert_eq!(first.get(&name), Some(&name), "map: {first:?}");
+    }
+
+    // A rebuild assigns the same references.
+    assert_eq!(refdes_by_hier_name(files), first);
+}
