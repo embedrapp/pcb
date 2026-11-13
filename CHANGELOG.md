@@ -10,7 +10,7 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ### Changed
 
-- Synced the local-first Embedr CLI with upstream 0.4.97: reliable Linux board builds, safer KiCad imports, tabbed board arrays, improved DFM land and drill-span checks, and physical SPICE values. Preserved Windows cache junction fallback, packaged `lib/std`, local documentation and annular-ring fixes, and service removals.
+- Synced the local-first Embedr CLI with upstream 0.4.101: KiCad project-directory imports with preserved sourcing and shared sheets, one-pass layout sync with updated embedded 3D models, JLCPCB DFM stackup and copper judgments, lower symbol-library memory use, and ZIP/SQLite security updates. Preserved Windows cache junction fallback, packaged `lib/std`, local documentation and annular-ring fixes, and service removals.
 - Adapted `pcb doc` remote documentation to the shared Git archive package cache.
 - Preserved local IPC-2581 BOM exports, including JLCPCB CSV, without availability lookups or service dependencies.
 
