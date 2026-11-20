@@ -836,6 +836,7 @@ mod tests {
 
         let out = render_imported_sheet_module(
             "TestModule",
+            false,
             &[ImportedIoNetDecl {
                 ident: "VCC".to_string(),
                 kind: ImportedNetKind::Power,
@@ -849,6 +850,7 @@ mod tests {
             &[ImportedInstanceCall {
                 module_ident: "Foo".to_string(),
                 refdes: "U1".to_string(),
+                refdes_from_config: false,
                 dnp: false,
                 skip_bom: None,
                 skip_pos: None,
