@@ -60,6 +60,10 @@ This branch includes downstream Windows cache work that may not exist upstream:
 
 If upstream changes `ensure_workspace_cache_symlink`, reconcile carefully and run a focused `pcb-zen` check.
 
+## Schematic Position Comments
+
+Upstream reads `# pcb:sch` comments only from the trailing block of a file, so anything written after it (Embedr's `# pcb:brd` comments, an appended line of code) hides every saved position. This fork reads them anywhere in the file and gathers them into the trailing block on save (`crates/pcb-sch/src/position.rs`). Keep that when upstream changes `parse_position_comments` or `edit_position_comments`; the tests named `*_above_other_trailing_text_*` and `*_gathers_earlier_positions_*` cover it.
+
 ## Dependency And Feature Rules
 
 - `pcbc` default features should not enable service integrations.
