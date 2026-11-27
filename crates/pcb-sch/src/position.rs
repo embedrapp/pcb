@@ -43,14 +43,27 @@ pub struct Position {
     pub mirror: Option<MirrorAxis>,
 }
 
+/// A plain decimal (`-12.5`): the form a save writes and the only one the
+/// Embedr app reads, so both agree on which lines are positions.
+fn parse_decimal(token: &str) -> Option<f64> {
+    let digits = token.strip_prefix('-').unwrap_or(token);
+    if !digits
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        return None;
+    }
+    token.parse::<f64>().ok().filter(|value| value.is_finite())
+}
+
 fn parse_position_comment(trimmed: &str) -> Option<(String, Position)> {
     let remainder = trimmed.strip_prefix("# pcb:sch ")?;
     let mut parts = remainder.split_whitespace();
 
     let element_id = parts.next()?.to_string();
-    let x = parts.next()?.strip_prefix("x=")?.parse::<f64>().ok()?;
-    let y = parts.next()?.strip_prefix("y=")?.parse::<f64>().ok()?;
-    let rotation = parts.next()?.strip_prefix("rot=")?.parse::<f64>().ok()?;
+    let x = parse_decimal(parts.next()?.strip_prefix("x=")?)?;
+    let y = parse_decimal(parts.next()?.strip_prefix("y=")?)?;
+    let rotation = parse_decimal(parts.next()?.strip_prefix("rot=")?)?;
 
     let mirror = match parts.next() {
         Some(token) => {
@@ -88,7 +101,8 @@ fn format_position_comment(element_id: &NaturalString, position: &Position) -> S
     )
 }
 
-/// Byte range of the trailing `# pcb:sch` block and the positions in it.
+/// Byte range of the trailing `# pcb:sch` block and the positions in it. A
+/// symbol written twice in the block takes its last line.
 fn parse_trailing_block(content: &str) -> (BTreeMap<NaturalString, Position>, usize) {
     let mut positions = BTreeMap::new();
     let mut block_start = content.len();
@@ -105,7 +119,10 @@ fn parse_trailing_block(content: &str) -> (BTreeMap<NaturalString, Position>, us
             trimmed if trimmed.starts_with("# pcb:sch ") => {
                 // Position comment - parse it
                 if let Some((element_id, position)) = parse_position_comment(trimmed) {
-                    positions.insert(NaturalString::from(element_id), position);
+                    // Walking up from the end: the first line seen is the last written.
+                    positions
+                        .entry(NaturalString::from(element_id))
+                        .or_insert(position);
                 } else {
                     log::warn!("Malformed pcb:sch comment: {}", line.trim());
                 }
@@ -142,7 +159,8 @@ fn stray_position_lines(
 
 /// Parse every `# pcb:sch` comment in the file. Returns the positions and the
 /// byte offset of the trailing position block. A symbol saved more than once
-/// takes its trailing-block position, else its last one.
+/// takes its trailing-block position, else its last one; within either, the
+/// last line written.
 pub fn parse_position_comments(content: &str) -> (BTreeMap<NaturalString, Position>, usize) {
     let (trailing, block_start) = parse_trailing_block(content);
     let mut positions = BTreeMap::new();
@@ -157,7 +175,9 @@ pub fn parse_position_comments(content: &str) -> (BTreeMap<NaturalString, Positi
 /// Updates take precedence when the same symbol appears in both collections.
 /// Returns the byte offset the rewrite starts at and the text that replaces the
 /// rest of the file: position comments above the trailing block are gathered
-/// into it, and every other line stays as written.
+/// into it, and every line above the trailing block that is not a position
+/// stays as written. The trailing block itself is rewritten, which drops
+/// malformed `# pcb:sch` lines in it.
 pub fn edit_position_comments(
     content: &str,
     new_positions: &BTreeMap<String, Position>,
@@ -380,6 +400,41 @@ load("@stdlib/interfaces.zen", "Power")
         assert_eq!(positions.len(), 2);
         assert_eq!(positions["R1"].x, 9.0);
         assert_eq!(positions["R2"].x, 2.0);
+    }
+
+    #[test]
+    fn test_last_line_wins_inside_the_trailing_block() {
+        // A writer that moved an older block behind a newer one leaves both
+        // in one block, older lines first.
+        let content = "x = 1\n\n# pcb:sch A x=1 y=2 rot=0\n# pcb:sch B x=5 y=5 rot=0\n# pcb:sch A x=9 y=9 rot=180\n";
+        let (positions, _) = parse_position_comments(content);
+        assert_eq!(positions[&NaturalString::from("A".to_string())].x, 9.0);
+        let (start, text) = edit_position_comments(content, &BTreeMap::new(), &[]);
+        assert_eq!(
+            format!("{}{}", &content[..start], text),
+            "x = 1\n\n# pcb:sch A x=9.0000 y=9.0000 rot=180\n# pcb:sch B x=5.0000 y=5.0000 rot=0\n"
+        );
+    }
+
+    #[test]
+    fn test_only_plain_decimals_are_positions() {
+        // The Embedr app reads the same lines; keep the two lists equal
+        // (src/shared/schematicGraphics.test.mjs in embedrapp/desktop).
+        for value in [
+            "1e3", "+1", "inf", "NaN", "infinity", "0x10", "1.2.3", "-", ".",
+        ] {
+            let content = format!("# pcb:sch A x={value} y=2 rot=0\nfoo\n");
+            assert!(parse_position_comments(&content).0.is_empty(), "{value}");
+        }
+        for value in ["1", "-1", "1.", ".5", "-0.25", "007"] {
+            let content = format!("# pcb:sch A x={value} y=2 rot=0\nfoo\n");
+            assert_eq!(parse_position_comments(&content).0.len(), 1, "{value}");
+        }
+        assert!(
+            parse_position_comments("# pcb:sch\tA x=1 y=2 rot=0\nfoo\n")
+                .0
+                .is_empty()
+        );
     }
 
     #[test]
