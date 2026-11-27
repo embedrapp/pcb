@@ -43,14 +43,27 @@ pub struct Position {
     pub mirror: Option<MirrorAxis>,
 }
 
+/// A plain decimal (`-12.5`): the form a save writes and the only one the
+/// Embedr app reads, so both agree on which lines are positions.
+fn parse_decimal(token: &str) -> Option<f64> {
+    let digits = token.strip_prefix('-').unwrap_or(token);
+    if !digits
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        return None;
+    }
+    token.parse::<f64>().ok().filter(|value| value.is_finite())
+}
+
 fn parse_position_comment(trimmed: &str) -> Option<(String, Position)> {
     let remainder = trimmed.strip_prefix("# pcb:sch ")?;
     let mut parts = remainder.split_whitespace();
 
     let element_id = parts.next()?.to_string();
-    let x = parts.next()?.strip_prefix("x=")?.parse::<f64>().ok()?;
-    let y = parts.next()?.strip_prefix("y=")?.parse::<f64>().ok()?;
-    let rotation = parts.next()?.strip_prefix("rot=")?.parse::<f64>().ok()?;
+    let x = parse_decimal(parts.next()?.strip_prefix("x=")?)?;
+    let y = parse_decimal(parts.next()?.strip_prefix("y=")?)?;
+    let rotation = parse_decimal(parts.next()?.strip_prefix("rot=")?)?;
 
     let mirror = match parts.next() {
         Some(token) => {
@@ -88,7 +101,9 @@ fn format_position_comment(element_id: &NaturalString, position: &Position) -> S
     )
 }
 
-pub fn parse_position_comments(content: &str) -> (BTreeMap<NaturalString, Position>, usize) {
+/// Byte range of the trailing `# pcb:sch` block and the positions in it. A
+/// symbol written twice in the block takes its last line.
+fn parse_trailing_block(content: &str) -> (BTreeMap<NaturalString, Position>, usize) {
     let mut positions = BTreeMap::new();
     let mut block_start = content.len();
 
@@ -104,7 +119,10 @@ pub fn parse_position_comments(content: &str) -> (BTreeMap<NaturalString, Positi
             trimmed if trimmed.starts_with("# pcb:sch ") => {
                 // Position comment - parse it
                 if let Some((element_id, position)) = parse_position_comment(trimmed) {
-                    positions.insert(NaturalString::from(element_id), position);
+                    // Walking up from the end: the first line seen is the last written.
+                    positions
+                        .entry(NaturalString::from(element_id))
+                        .or_insert(position);
                 } else {
                     log::warn!("Malformed pcb:sch comment: {}", line.trim());
                 }
@@ -120,8 +138,46 @@ pub fn parse_position_comments(content: &str) -> (BTreeMap<NaturalString, Positi
     (positions, block_start)
 }
 
-/// Apply position updates and deletions after parsing the position block once.
+/// Valid `# pcb:sch` lines above the trailing block, as `(line_start, line_end, id, position)`.
+/// Text written after the position block (another comment block, appended code)
+/// leaves the saved positions here.
+fn stray_position_lines(
+    content: &str,
+    block_start: usize,
+) -> Vec<(usize, usize, String, Position)> {
+    let mut lines = Vec::new();
+    let mut offset = 0;
+    for line in content[..block_start].split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        if let Some((element_id, position)) = parse_position_comment(line.trim()) {
+            lines.push((start, offset, element_id, position));
+        }
+    }
+    lines
+}
+
+/// Parse every `# pcb:sch` comment in the file. Returns the positions and the
+/// byte offset of the trailing position block. A symbol saved more than once
+/// takes its trailing-block position, else its last one; within either, the
+/// last line written.
+pub fn parse_position_comments(content: &str) -> (BTreeMap<NaturalString, Position>, usize) {
+    let (trailing, block_start) = parse_trailing_block(content);
+    let mut positions = BTreeMap::new();
+    for (_, _, element_id, position) in stray_position_lines(content, block_start) {
+        positions.insert(NaturalString::from(element_id), position);
+    }
+    positions.extend(trailing);
+    (positions, block_start)
+}
+
+/// Apply position updates and deletions after parsing the position comments once.
 /// Updates take precedence when the same symbol appears in both collections.
+/// Returns the byte offset the rewrite starts at and the text that replaces the
+/// rest of the file: position comments above the trailing block are gathered
+/// into it, and every line above the trailing block that is not a position
+/// stays as written. The trailing block itself is rewritten, which drops
+/// malformed `# pcb:sch` lines in it.
 pub fn edit_position_comments(
     content: &str,
     new_positions: &BTreeMap<String, Position>,
@@ -136,23 +192,34 @@ pub fn edit_position_comments(
         positions.insert(NaturalString::from(element_id.clone()), position.clone());
     }
 
-    let content_before = &content[..block_start];
-    let mut position_comments = String::new();
+    let stray = stray_position_lines(content, block_start);
+    let edit_start = stray.first().map_or(block_start, |line| line.0);
+    let mut replacement = String::new();
+    let mut kept_from = edit_start;
+    for (start, end, _, _) in &stray {
+        replacement.push_str(&content[kept_from..*start]);
+        kept_from = *end;
+    }
+    replacement.push_str(&content[kept_from..block_start]);
+
     if !positions.is_empty() {
-        if !content_before.is_empty() && !content_before.ends_with("\n\n") {
-            position_comments.push_str(if content_before.ends_with('\n') {
-                "\n"
-            } else {
-                "\n\n"
-            });
+        let before_is_empty = edit_start == 0 && replacement.is_empty();
+        let before = if replacement.is_empty() {
+            &content[..edit_start]
+        } else {
+            replacement.as_str()
+        };
+        if !before_is_empty && !before.ends_with("\n\n") {
+            let separator = if before.ends_with('\n') { "\n" } else { "\n\n" };
+            replacement.push_str(separator);
         }
 
         for (element_id, position) in &positions {
-            position_comments.push_str(&format_position_comment(element_id, position));
+            replacement.push_str(&format_position_comment(element_id, position));
         }
     }
 
-    (block_start, position_comments)
+    (edit_start, replacement)
 }
 
 /// Convert a stable symbol ID (e.g. "comp:R1" or "sym:NET#2") to the
@@ -268,9 +335,10 @@ load("@stdlib/interfaces.zen", "Power")
 # pcb:sch MISSING_ROTATION x=300.0 y=400.0
 # pcb:sch INVALID_NUMBER x=not_a_number y=500.0 rot=0"#;
 
-        // Test 1: Backward parsing should ignore malformed block at end
-        let (final_block_positions, _block_start) = parse_position_comments(original_content);
-        assert_eq!(final_block_positions.len(), 0); // No valid positions in malformed final block
+        // Test 1: Malformed lines are ignored; the valid one above the final block is read
+        let (parsed_positions, _block_start) = parse_position_comments(original_content);
+        assert_eq!(parsed_positions.len(), 1);
+        assert_eq!(parsed_positions["VALID_ELEMENT"].x, 100.0);
 
         // Test 2: Full file scan should find valid positions anywhere
         let mut new_positions = std::collections::BTreeMap::new();
@@ -304,6 +372,114 @@ load("@stdlib/interfaces.zen", "Power")
         // Should have exactly two pcb:sch lines (VALID_ELEMENT + NEW_ELEMENT)
         let pcb_sch_count = updated_content.matches("# pcb:sch ").count();
         assert_eq!(pcb_sch_count, 2);
+    }
+
+    #[test]
+    fn test_positions_above_other_trailing_text_are_read() {
+        let content = r#"Board(name="gamepad")
+
+# pcb:sch A1.A_NANO x=2336.8000 y=1270.0000 rot=0
+# pcb:sch SW6.B3F-1000 x=1892.7600 y=1864.3600 rot=270
+
+# Component locations, board coordinates in mm.
+# pcb:brd A1 x=171 y=101 rot=90 side=bottom
+# pcb:brd SW6 x=166 y=77.5 rot=0 side=top
+"#;
+
+        let (positions, block_start) = parse_position_comments(content);
+        assert_eq!(block_start, content.len());
+        assert_eq!(positions.len(), 2);
+        assert_eq!(positions["A1.A_NANO"].x, 2336.8);
+        assert_eq!(positions["SW6.B3F-1000"].rotation, 270.0);
+    }
+
+    #[test]
+    fn test_trailing_block_wins_over_earlier_position() {
+        let content = "# pcb:sch R1 x=1.0 y=1.0 rot=0\n# pcb:sch R2 x=2.0 y=2.0 rot=0\nx = 1\n\n# pcb:sch R1 x=9.0 y=9.0 rot=90\n";
+        let (positions, _) = parse_position_comments(content);
+        assert_eq!(positions.len(), 2);
+        assert_eq!(positions["R1"].x, 9.0);
+        assert_eq!(positions["R2"].x, 2.0);
+    }
+
+    #[test]
+    fn test_last_line_wins_inside_the_trailing_block() {
+        // A writer that moved an older block behind a newer one leaves both
+        // in one block, older lines first.
+        let content = "x = 1\n\n# pcb:sch A x=1 y=2 rot=0\n# pcb:sch B x=5 y=5 rot=0\n# pcb:sch A x=9 y=9 rot=180\n";
+        let (positions, _) = parse_position_comments(content);
+        assert_eq!(positions[&NaturalString::from("A".to_string())].x, 9.0);
+        let (start, text) = edit_position_comments(content, &BTreeMap::new(), &[]);
+        assert_eq!(
+            format!("{}{}", &content[..start], text),
+            "x = 1\n\n# pcb:sch A x=9.0000 y=9.0000 rot=180\n# pcb:sch B x=5.0000 y=5.0000 rot=0\n"
+        );
+    }
+
+    #[test]
+    fn test_only_plain_decimals_are_positions() {
+        // The Embedr app reads the same lines; keep the two lists equal
+        // (src/shared/schematicGraphics.test.mjs in embedrapp/desktop).
+        for value in [
+            "1e3", "+1", "inf", "NaN", "infinity", "0x10", "1.2.3", "-", ".",
+        ] {
+            let content = format!("# pcb:sch A x={value} y=2 rot=0\nfoo\n");
+            assert!(parse_position_comments(&content).0.is_empty(), "{value}");
+        }
+        for value in ["1", "-1", "1.", ".5", "-0.25", "007"] {
+            let content = format!("# pcb:sch A x={value} y=2 rot=0\nfoo\n");
+            assert_eq!(parse_position_comments(&content).0.len(), 1, "{value}");
+        }
+        assert!(
+            parse_position_comments("# pcb:sch\tA x=1 y=2 rot=0\nfoo\n")
+                .0
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_edit_gathers_earlier_positions_and_keeps_other_lines() {
+        let content = r#"Board(name="gamepad")
+
+# pcb:sch A1 x=10.0000 y=20.0000 rot=0
+# pcb:sch SW6 x=30.0000 y=40.0000 rot=270
+
+# Component locations, board coordinates in mm.
+# pcb:brd A1 x=171 y=101 rot=90 side=bottom
+# pcb:brd SW6 x=166 y=77.5 rot=0 side=top
+"#;
+        let mut new_positions = std::collections::BTreeMap::new();
+        new_positions.insert(
+            "U1".to_string(),
+            Position {
+                x: 5.0,
+                y: 6.0,
+                rotation: 0.0,
+                mirror: None,
+            },
+        );
+
+        let (start, replacement) =
+            edit_position_comments(content, &new_positions, &["SW6".to_string()]);
+        let updated = format!("{}{}", &content[..start], replacement);
+
+        assert_eq!(
+            updated,
+            r#"Board(name="gamepad")
+
+
+# Component locations, board coordinates in mm.
+# pcb:brd A1 x=171 y=101 rot=90 side=bottom
+# pcb:brd SW6 x=166 y=77.5 rot=0 side=top
+
+# pcb:sch A1 x=10.0000 y=20.0000 rot=0
+# pcb:sch U1 x=5.0000 y=6.0000 rot=0
+"#
+        );
+
+        // A second edit finds one trailing block and changes nothing else.
+        let (start, replacement) = edit_position_comments(&updated, &Default::default(), &[]);
+        assert_eq!(format!("{}{}", &updated[..start], replacement), updated);
     }
 
     #[test]
@@ -383,14 +559,14 @@ load("@stdlib/interfaces.zen", "Power")
         // Test content with pcb:sch comments scattered throughout
         let content = r#"load("@stdlib/interfaces.zen", "Power")
 
-# Early position comment (should be ignored by backward parsing)
+# Early position comment (read, and gathered into the final block on save)
 # pcb:sch EARLY_ELEMENT x=100.0 y=200.0 rot=0
 
 Resistor = Module("@stdlib/generics/Resistor.zen")
 vcc = Power("VCC")
 gnd = Ground("GND")
 
-# Position comment in the middle (should be ignored)
+# Position comment in the middle (read, and gathered on save)
 # pcb:sch MIDDLE_ELEMENT x=300.0 y=400.0 rot=90
 
 Resistor("R1", "10kOhm", "0603", P1=vcc.NET, P2=gnd.NET)
@@ -398,16 +574,16 @@ Resistor("R1", "10kOhm", "0603", P1=vcc.NET, P2=gnd.NET)
 # Some final comment before positions
 # This line should stop the backward parsing
 
-# Final position block (only these should be parsed)
+# Final position block
 # pcb:sch FINAL_A x=500.0 y=600.0 rot=180  
 # pcb:sch FINAL_B x=700.0 y=800.0 rot=270"#;
 
         let (positions, block_start) = parse_position_comments(content);
 
-        // Should only parse the final position block (2 elements)
-        assert_eq!(positions.len(), 2);
-        assert!(!positions.contains_key("EARLY_ELEMENT")); // Above non-position content
-        assert!(!positions.contains_key("MIDDLE_ELEMENT")); // Above non-position content
+        // Positions are read wherever they are in the file
+        assert_eq!(positions.len(), 4);
+        assert!(positions.contains_key("EARLY_ELEMENT")); // Above non-position content
+        assert!(positions.contains_key("MIDDLE_ELEMENT")); // Above non-position content
         assert!(positions.contains_key("FINAL_A")); // In final block
         assert!(positions.contains_key("FINAL_B")); // In final block
 
@@ -555,10 +731,10 @@ Resistor = Module("@stdlib/generics/Resistor.zen")"#;
 
         let (positions, _) = parse_position_comments(content);
 
-        // Backward parsing stops early due to malformed final line
-        assert_eq!(positions.len(), 0); // NO_SPACE line is malformed and stops parsing
-        assert!(!positions.contains_key("INDENTED")); // Above stopping point
-        assert!(!positions.contains_key("TABS")); // Above stopping point
+        // Leading and trailing whitespace is accepted; the marker itself is exact
+        assert_eq!(positions.len(), 2);
+        assert!(positions.contains_key("INDENTED"));
+        assert!(positions.contains_key("TABS"));
         assert!(!positions.contains_key("NO_SPACE")); // Malformed
     }
 

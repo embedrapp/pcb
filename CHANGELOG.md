@@ -16,6 +16,7 @@ and this project adheres to Semantic Versioning (https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Schematic positions (`# pcb:sch` comments) are read from the whole file, not only from the trailing comment block, so text written after them (board placement comments, a note, appended code) no longer hides them. A save gathers them into the trailing block.
 - DFM annular-ring checks bound a hole's ring exactly with its own filled circular land, so a land drawn exactly at the limit passes instead of staying unresolved within the polygonal image's uncertainty.
 - `pcb layout` no longer removes the fab layers from KiCad's shared all-layers set while measuring footprint bounds.
 - `pcb doc --package @stdlib…` resolves the toolchain stdlib through a scratch workspace instead of writing `.pcb` links into the stdlib install, so it works when the runtime is installed read-only.

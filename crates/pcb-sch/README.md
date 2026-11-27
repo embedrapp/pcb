@@ -16,9 +16,14 @@ Each comment records the position and orientation of one schematic symbol:
 is the rotation in degrees, and the optional `mirror` field specifies the `x` or
 `y` reflection axis.
 
-The parser reads only the final contiguous comment block. Blank lines may occur
-inside that block. Scanning stops at the first nonempty line that is not a
-`pcb:sch` comment, and malformed comments are ignored.
+`x`, `y` and `rot` are plain decimals (`-12.5`); a line in any other form is
+not a position.
+
+The parser reads position comments from the whole file. A symbol written more
+than once takes its position from the final contiguous comment block when it is
+there, else from its last line; inside either, the last line wins. Blank lines
+may occur inside the final block, and malformed comments are ignored. A save
+gathers every position into the final block.
 
 Netlist serialization writes positions to
 `instances.<instance>.symbol_positions`. The `mirror` property is omitted when
