@@ -650,7 +650,7 @@ r = e96(Resistance("4.8k"))  # → 4.87kΩ (nearest E96 value)
 
 Zener supports persisted schematic placement metadata in trailing comment blocks.
 
-Position comments are read wherever they are in the file, so text written after the block (another comment block, appended code) keeps them. When a symbol is saved more than once, the trailing block wins, else the last line. Saving positions gathers every position comment into the trailing block and leaves all other lines as written.
+Position comments are read wherever they are in the file, so text written after the block (another comment block, appended code) keeps them. When a symbol is saved more than once, the trailing block wins, else the last line; inside either, the last line written. Coordinates are plain decimals (`-12.5`); a line in any other form is not a position. Saving positions gathers every position comment into the trailing block and leaves the lines above it as written; a malformed `# pcb:sch` line inside the trailing block is dropped.
 
 Canonical line format:
 
